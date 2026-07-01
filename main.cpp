@@ -675,12 +675,15 @@ void BuildProcessSummaries(const std::vector<ConnectionRow>& connections, std::v
     summaries.clear();
     std::unordered_map<std::string, std::vector<size_t>> groups;
     for (size_t i = 0; i < connections.size(); ++i) {
-        groups[connections[i].procName].push_back(i);
+        std::string name = connections[i].procName;
+        if (name.empty() || name == "-") {
+            name = "Unknown";
+        }
+        groups[name].push_back(i);
     }
 
     for (const auto& pair : groups) {
         const std::string& name = pair.first;
-        if (name == "-" || name == "Unknown" || name == "System Idle Process") continue;
 
         ProcessSummaryRow row;
         row.procName = name;
@@ -1059,8 +1062,8 @@ void RunInteractiveLoop() {
         // Render Column Headers
         char colBuf[256];
         if (currentView == VIEW_SUMMARY) {
-            sprintf(colBuf, "   %-6s %-18s %-15s %-11s %-11s",
-                    "PID", "PROCESS", "CONNS", "SENT", "RECV");
+            sprintf(colBuf, "   %-25s %-7s %-7s %-12s %-12s",
+                    "PROCESS", "PORTS", "CONNS", "SENT", "RECV");
         } else {
             sprintf(colBuf, "   %-6s %-7s %-20s %-13s %-11s %-11s %-10s",
                     "PROTO", "PORT", "REMOTE", "STATE", "SENT", "RECV", "FIREWALL");
