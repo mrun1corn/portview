@@ -9,6 +9,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <iphlpapi.h>
+#include <tcpestats.h>
 #include <iostream>
 #include <vector>
 #include <string>
@@ -44,6 +45,37 @@ std::string IpToString(DWORD ipAddress) {
         return ipStr;
     }
     return "0.0.0.0";
+}
+
+bool IsElevated() {
+    bool elevated = false;
+    HANDLE hToken = NULL;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+        TOKEN_ELEVATION elevation;
+        DWORD size = sizeof(elevation);
+        if (GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &size)) {
+            elevated = elevation.TokenIsElevated != 0;
+        }
+        CloseHandle(hToken);
+    }
+    return elevated;
+}
+
+std::string FormatBytes(ULONG64 bytes) {
+    double num = static_cast<double>(bytes);
+    const char* units[] = {"B", "KB", "MB", "GB", "TB"};
+    int unitIndex = 0;
+    while (num >= 1024.0 && unitIndex < 4) {
+        num /= 1024.0;
+        unitIndex++;
+    }
+    char buf[64];
+    if (unitIndex == 0) {
+        sprintf(buf, "%d B", static_cast<int>(bytes));
+    } else {
+        sprintf(buf, "%.1f %s", num, units[unitIndex]);
+    }
+    return buf;
 }
 
 std::string WStringToString(const std::wstring& wstr) {
@@ -112,6 +144,7 @@ int main(int argc, char* argv[]) {
     if (dwRetVal == NO_ERROR && pTcpTable != nullptr) {
         std::cout << "TCP Connections (" << pTcpTable->dwNumEntries << " active)\n";
         std::cout << "PORT    REMOTE               STATE         PID    PROCESS            SENT        RECV\n";
+        bool elevated = IsElevated();
         for (DWORD i = 0; i < pTcpTable->dwNumEntries; ++i) {
             const auto& row = pTcpTable->table[i];
             u_short localPort = ntohs((u_short)row.dwLocalPort);
@@ -124,8 +157,33 @@ int main(int argc, char* argv[]) {
             std::string state = TcpStateToString(row.dwState);
             DWORD pid = row.dwOwningPid;
             std::string procName = GetProcessName(pid);
+
+            std::string sentStr = "—";
+            std::string recvStr = "—";
+
+            if (elevated) {
+                MIB_TCPROW mibRow;
+                mibRow.dwState = row.dwState;
+                mibRow.dwLocalAddr = row.dwLocalAddr;
+                mibRow.dwLocalPort = row.dwLocalPort;
+                mibRow.dwRemoteAddr = row.dwRemoteAddr;
+                mibRow.dwRemotePort = row.dwRemotePort;
+
+                TCP_ESTATS_DATA_RW_v0 rw;
+                rw.EnableCollection = TRUE;
+                SetPerTcpConnectionEStats(&mibRow, TcpConnectionEstatsData, (unsigned char*)&rw, 0, sizeof(rw), 0);
+
+                TCP_ESTATS_DATA_ROD_v0 dataRod;
+                ULONG rodSize = sizeof(dataRod);
+                DWORD res = GetPerTcpConnectionEStats(&mibRow, TcpConnectionEstatsData, NULL, 0, 0, NULL, 0, 0, (unsigned char*)&dataRod, 0, rodSize);
+                if (res == NO_ERROR) {
+                    sentStr = FormatBytes(dataRod.DataBytesOut);
+                    recvStr = FormatBytes(dataRod.DataBytesIn);
+                }
+            }
+
             printf("%-7u %-20s %-13s %-6u %-18s %-11s %-11s\n",
-                   localPort, remoteAddr.c_str(), state.c_str(), pid, procName.c_str(), "—", "—");
+                   localPort, remoteAddr.c_str(), state.c_str(), pid, procName.c_str(), sentStr.c_str(), recvStr.c_str());
         }
     }
 
