@@ -15,6 +15,7 @@
 #include <string>
 #include <algorithm>
 #include <unordered_map>
+#include <io.h>
 
 // Link with iphlpapi.lib and ws2_32.lib
 #pragma comment(lib, "iphlpapi.lib")
@@ -121,6 +122,48 @@ std::string GetProcessName(DWORD pid) {
     cache[pid] = processName;
     return processName;
 }
+struct ConnectionRow {
+    std::string proto;
+    u_short localPort;
+    std::string remoteAddr;
+    std::string state;
+    DWORD pid;
+    std::string procName;
+    std::string sentStr;
+    std::string recvStr;
+    ULONG64 totalBytes;
+};
+
+bool IsStdoutTerminal() {
+    return _isatty(_fileno(stdout)) != 0;
+}
+
+void GetConsoleSize(int& width, int& height) {
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (GetConsoleScreenBufferInfo(hOut, &csbi)) {
+        width = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+        height = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+    } else {
+        width = 80;
+        height = 25;
+    }
+}
+
+void ShowConsoleCursor(bool showFlag) {
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    CONSOLE_CURSOR_INFO cursorInfo;
+    GetConsoleCursorInfo(hOut, &cursorInfo);
+    cursorInfo.bVisible = showFlag;
+    SetConsoleCursorInfo(hOut, &cursorInfo);
+}
+
+void SetCursorPosition(int x, int y) {
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    COORD coord = { (SHORT)x, (SHORT)y };
+    SetConsoleCursorPosition(hOut, coord);
+}
+
 void PauseIfSpawnedConsole() {
     DWORD processList[2];
     DWORD count = GetConsoleProcessList(processList, 2);
@@ -130,34 +173,15 @@ void PauseIfSpawnedConsole() {
     }
 }
 
-int main(int argc, char* argv[]) {
-    // Simple Argument Parsing
-    if (argc > 1) {
-        std::string arg = argv[1];
-        if (arg == "-h" || arg == "--help") {
-            std::cout << "portview v1.0 — Windows Port & Traffic Reviewer\n\n"
-                      << "Usage: portview.exe [options]\n\n"
-                      << "Options:\n"
-                      << "  -h, --help     Show this help message\n"
-                      << "  -v, --version  Show version information\n\n"
-                      << "Note: Run as administrator to see per-connection traffic stats.\n";
-            return 0;
-        } else if (arg == "-v" || arg == "--version") {
-            std::cout << "portview v1.0\n";
-            return 0;
-        }
-    }
+void LoadData(std::vector<ConnectionRow>& connections, std::unordered_map<std::string, ULONG64>& processTraffic, DWORD& tcpCount, DWORD& udpCount) {
+    connections.clear();
+    processTraffic.clear();
+    tcpCount = 0;
+    udpCount = 0;
 
-    // Initialize Winsock
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        std::cerr << "Failed to initialize Winsock.\n";
-        PauseIfSpawnedConsole();
-        return 1;
-    }
+    bool elevated = IsElevated();
 
-    std::cout << "portview v1.0 — Windows Port & Traffic Reviewer\n\n";
-    // Enumerate TCP connections using GetExtendedTcpTable
+    // 1. Fetch TCP
     ULONG size = 0;
     DWORD dwRetVal = GetExtendedTcpTable(NULL, &size, TRUE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
     std::vector<char> buffer;
@@ -169,77 +193,55 @@ int main(int argc, char* argv[]) {
         dwRetVal = GetExtendedTcpTable(pTcpTable, &size, TRUE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
     }
 
-    if (dwRetVal != NO_ERROR) {
-        std::cerr << "Failed to retrieve TCP table. Error: " << dwRetVal << "\n";
-        WSACleanup();
-        PauseIfSpawnedConsole();
-        return 1;
-    }
-
-    std::cout << "TCP Connections (" << pTcpTable->dwNumEntries << " active)\n";
-    std::cout << "PORT    REMOTE               STATE         PID    PROCESS            SENT        RECV\n";
-
-    bool elevated = IsElevated();
-    std::unordered_map<std::string, ULONG64> processTraffic;
-
-    for (DWORD i = 0; i < pTcpTable->dwNumEntries; ++i) {
-        auto row = pTcpTable->table[i];
-        
-        // Local Port (network byte order, convert to host byte order)
-        u_short localPort = ntohs((u_short)row.dwLocalPort);
-        
-        // Remote Address and Port
-        std::string remoteIp = IpToString(row.dwRemoteAddr);
-        u_short remotePort = ntohs((u_short)row.dwRemotePort);
-        std::string remoteAddr = remoteIp + ":" + std::to_string(remotePort);
-        if (row.dwRemoteAddr == 0 && remotePort == 0) {
-            remoteAddr = "0.0.0.0:*";
-        }
-
-        std::string state = TcpStateToString(row.dwState);
-        DWORD pid = row.dwOwningPid;
-        std::string procName = GetProcessName(pid);
-
-        std::string sentStr = "—";
-        std::string recvStr = "—";
-
-        if (elevated) {
-            // Try to enable and read stats.
-            // SetPerTcpConnectionEStats enables stats for this TCP connection row.
-            // However, SetPerTcpConnectionEStats requires a MIB_TCPROW or MIB_TCPROW_LH.
-            // Since pTcpTable has table[i] as MIB_TCPROW_OWNER_PID, we need to map or construct a MIB_TCPROW
-            // actually, SetPerTcpConnectionEStats expects TCP_ESTATS_TYPE, and an IP Helper TCP row representation.
-            // Under Windows SDK:
-            // SetPerTcpConnectionEStats(PMIB_TCPROW row, TCP_ESTATS_TYPE type, PBYTE path, ULONG pathVersion, ULONG pathSize)
-            // Let's build a MIB_TCPROW from row.
-            MIB_TCPROW mibRow;
-            mibRow.dwState = row.dwState;
-            mibRow.dwLocalAddr = row.dwLocalAddr;
-            mibRow.dwLocalPort = row.dwLocalPort;
-            mibRow.dwRemoteAddr = row.dwRemoteAddr;
-            mibRow.dwRemotePort = row.dwRemotePort;
-
-            TCP_ESTATS_DATA_RW_v0 rw;
-            rw.EnableCollection = TRUE;
-            SetPerTcpConnectionEStats(&mibRow, TcpConnectionEstatsData, (unsigned char*)&rw, 0, sizeof(rw), 0);
-
-            // Now query stats.
-            TCP_ESTATS_DATA_ROD_v0 dataRod;
-            ULONG rodSize = sizeof(dataRod);
-            DWORD res = GetPerTcpConnectionEStats(&mibRow, TcpConnectionEstatsData, NULL, 0, 0, NULL, 0, 0, (unsigned char*)&dataRod, 0, rodSize);
-            if (res == NO_ERROR) {
-                sentStr = FormatBytes(dataRod.DataBytesOut);
-                recvStr = FormatBytes(dataRod.DataBytesIn);
-                processTraffic[procName] += dataRod.DataBytesOut + dataRod.DataBytesIn;
+    if (dwRetVal == NO_ERROR && pTcpTable != nullptr) {
+        tcpCount = pTcpTable->dwNumEntries;
+        for (DWORD i = 0; i < pTcpTable->dwNumEntries; ++i) {
+            const auto& row = pTcpTable->table[i];
+            
+            ConnectionRow conn;
+            conn.proto = "TCP";
+            conn.localPort = ntohs((u_short)row.dwLocalPort);
+            
+            std::string remoteIp = IpToString(row.dwRemoteAddr);
+            u_short remotePort = ntohs((u_short)row.dwRemotePort);
+            conn.remoteAddr = remoteIp + ":" + std::to_string(remotePort);
+            if (row.dwRemoteAddr == 0 && remotePort == 0) {
+                conn.remoteAddr = "0.0.0.0:*";
             }
-        }
+            conn.state = TcpStateToString(row.dwState);
+            conn.pid = row.dwOwningPid;
+            conn.procName = GetProcessName(conn.pid);
+            conn.sentStr = "—";
+            conn.recvStr = "—";
+            conn.totalBytes = 0;
 
-        printf("%-7u %-20s %-13s %-6u %-18s %-11s %-11s\n",
-               localPort, remoteAddr.c_str(), state.c_str(), pid, procName.c_str(), sentStr.c_str(), recvStr.c_str());
+            if (elevated) {
+                MIB_TCPROW mibRow;
+                mibRow.dwState = row.dwState;
+                mibRow.dwLocalAddr = row.dwLocalAddr;
+                mibRow.dwLocalPort = row.dwLocalPort;
+                mibRow.dwRemoteAddr = row.dwRemoteAddr;
+                mibRow.dwRemotePort = row.dwRemotePort;
+
+                TCP_ESTATS_DATA_RW_v0 rw;
+                rw.EnableCollection = TRUE;
+                SetPerTcpConnectionEStats(&mibRow, TcpConnectionEstatsData, (unsigned char*)&rw, 0, sizeof(rw), 0);
+
+                TCP_ESTATS_DATA_ROD_v0 dataRod;
+                ULONG rodSize = sizeof(dataRod);
+                DWORD res = GetPerTcpConnectionEStats(&mibRow, TcpConnectionEstatsData, NULL, 0, 0, NULL, 0, 0, (unsigned char*)&dataRod, 0, rodSize);
+                if (res == NO_ERROR) {
+                    conn.sentStr = FormatBytes(dataRod.DataBytesOut);
+                    conn.recvStr = FormatBytes(dataRod.DataBytesIn);
+                    conn.totalBytes = dataRod.DataBytesOut + dataRod.DataBytesIn;
+                    processTraffic[conn.procName] += conn.totalBytes;
+                }
+            }
+            connections.push_back(conn);
+        }
     }
 
-
-    // Enumerate UDP listeners using GetExtendedUdpTable
+    // 2. Fetch UDP
     ULONG udpSize = 0;
     DWORD dwUdpRetVal = GetExtendedUdpTable(NULL, &udpSize, TRUE, AF_INET, UDP_TABLE_OWNER_PID, 0);
     std::vector<char> udpBuffer;
@@ -252,21 +254,59 @@ int main(int argc, char* argv[]) {
     }
 
     if (dwUdpRetVal == NO_ERROR && pUdpTable != nullptr) {
-        std::cout << "\nUDP Listeners (" << pUdpTable->dwNumEntries << " active)\n";
-        std::cout << "PORT    PID    PROCESS\n";
+        udpCount = pUdpTable->dwNumEntries;
         for (DWORD i = 0; i < pUdpTable->dwNumEntries; ++i) {
             const auto& row = pUdpTable->table[i];
-            u_short localPort = ntohs((u_short)row.dwLocalPort);
-            DWORD pid = row.dwOwningPid;
-            std::string procName = GetProcessName(pid);
-            printf("%-7u %-6u %-18s\n", localPort, pid, procName.c_str());
+            
+            ConnectionRow conn;
+            conn.proto = "UDP";
+            conn.localPort = ntohs((u_short)row.dwLocalPort);
+            conn.remoteAddr = "*:*";
+            conn.state = "—";
+            conn.pid = row.dwOwningPid;
+            conn.procName = GetProcessName(conn.pid);
+            conn.sentStr = "—";
+            conn.recvStr = "—";
+            conn.totalBytes = 0;
+
+            connections.push_back(conn);
         }
-    } else {
-        std::cerr << "\nFailed to retrieve UDP table. Error: " << dwUdpRetVal << "\n";
     }
 
-    DWORD tcpCount = (dwRetVal == NO_ERROR && pTcpTable != nullptr) ? pTcpTable->dwNumEntries : 0;
-    DWORD udpCount = (dwUdpRetVal == NO_ERROR && pUdpTable != nullptr) ? pUdpTable->dwNumEntries : 0;
+    // Sort connections: first by PROTO (TCP before UDP), then by PORT
+    std::sort(connections.begin(), connections.end(), [](const ConnectionRow& a, const ConnectionRow& b) {
+        if (a.proto != b.proto) {
+            return a.proto == "TCP";
+        }
+        return a.localPort < b.localPort;
+    });
+}
+
+void PrintStaticOutput() {
+    std::vector<ConnectionRow> connections;
+    std::unordered_map<std::string, ULONG64> processTraffic;
+    DWORD tcpCount = 0;
+    DWORD udpCount = 0;
+
+    LoadData(connections, processTraffic, tcpCount, udpCount);
+
+    std::cout << "TCP Connections (" << tcpCount << " active)\n";
+    std::cout << "PORT    REMOTE               STATE         PID    PROCESS            SENT        RECV\n";
+    for (const auto& conn : connections) {
+        if (conn.proto == "TCP") {
+            printf("%-7u %-20s %-13s %-6u %-18s %-11s %-11s\n",
+                   conn.localPort, conn.remoteAddr.c_str(), conn.state.c_str(),
+                   conn.pid, conn.procName.c_str(), conn.sentStr.c_str(), conn.recvStr.c_str());
+        }
+    }
+
+    std::cout << "\nUDP Listeners (" << udpCount << " active)\n";
+    std::cout << "PORT    PID    PROCESS\n";
+    for (const auto& conn : connections) {
+        if (conn.proto == "UDP") {
+            printf("%-7u %-6u %-18s\n", conn.localPort, conn.pid, conn.procName.c_str());
+        }
+    }
 
     std::string topTalker = "";
     ULONG64 maxTraffic = 0;
@@ -282,8 +322,194 @@ int main(int argc, char* argv[]) {
         std::cout << " | Top talker: " << topTalker << " (" << FormatBytes(maxTraffic) << ")";
     }
     std::cout << "\n";
+}
 
-    PauseIfSpawnedConsole();
+void RunInteractiveLoop() {
+    bool running = true;
+    int scrollOffset = 0;
+    DWORD lastRefreshTime = 0;
+    const DWORD refreshIntervalMs = 1500;
+
+    std::vector<ConnectionRow> connections;
+    std::unordered_map<std::string, ULONG64> processTraffic;
+    DWORD tcpCount = 0;
+    DWORD udpCount = 0;
+
+    LoadData(connections, processTraffic, tcpCount, udpCount);
+    lastRefreshTime = GetTickCount();
+
+    ShowConsoleCursor(false);
+
+    HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD prevMode;
+    GetConsoleMode(hInput, &prevMode);
+    SetConsoleMode(hInput, prevMode | ENABLE_WINDOW_INPUT | ENABLE_EXTENDED_FLAGS);
+
+    while (running) {
+        int width, height;
+        GetConsoleSize(width, height);
+
+        int headerLines = 2; // Banner + Columns
+        int footerLines = 1; // Summary
+        int viewportHeight = height - headerLines - footerLines - 1;
+        if (viewportHeight < 0) viewportHeight = 0;
+
+        DWORD currentTime = GetTickCount();
+        if (currentTime - lastRefreshTime >= refreshIntervalMs) {
+            LoadData(connections, processTraffic, tcpCount, udpCount);
+            lastRefreshTime = currentTime;
+        }
+
+        int totalRows = static_cast<int>(connections.size());
+        if (scrollOffset > totalRows - viewportHeight) {
+            scrollOffset = totalRows - viewportHeight;
+        }
+        if (scrollOffset < 0) {
+            scrollOffset = 0;
+        }
+
+        SetCursorPosition(0, 0);
+
+        char headerBuf[256];
+        sprintf(headerBuf, "portview v1.0 | Arrow Keys: Scroll | Page Up/Down | Esc/Q: Quit");
+        std::string headerStr(headerBuf);
+        if (headerStr.length() < (size_t)width) {
+            headerStr.append(width - headerStr.length(), ' ');
+        }
+        std::cout << headerStr << "\n";
+
+        char colBuf[256];
+        sprintf(colBuf, "%-6s %-7s %-20s %-13s %-6s %-18s %-11s %-11s",
+                "PROTO", "PORT", "REMOTE", "STATE", "PID", "PROCESS", "SENT", "RECV");
+        std::string colStr(colBuf);
+        if (colStr.length() < (size_t)width) {
+            colStr.append(width - colStr.length(), ' ');
+        }
+        std::cout << colStr << "\n";
+
+        for (int i = 0; i < viewportHeight; ++i) {
+            int idx = scrollOffset + i;
+            if (idx < totalRows) {
+                const auto& row = connections[idx];
+                char rowBuf[512];
+                sprintf(rowBuf, "%-6s %-7u %-20s %-13s %-6u %-18s %-11s %-11s",
+                        row.proto.c_str(), row.localPort, row.remoteAddr.c_str(),
+                        row.state.c_str(), row.pid, row.procName.c_str(),
+                        row.sentStr.c_str(), row.recvStr.c_str());
+                std::string rowStr(rowBuf);
+                if (rowStr.length() < (size_t)width) {
+                    rowStr.append(width - rowStr.length(), ' ');
+                } else if (rowStr.length() > (size_t)width) {
+                    rowStr = rowStr.substr(0, width);
+                }
+                std::cout << rowStr << "\n";
+            } else {
+                std::string emptyStr(width, ' ');
+                std::cout << emptyStr << "\n";
+            }
+        }
+
+        std::string topTalker = "";
+        ULONG64 maxTraffic = 0;
+        for (const auto& pair : processTraffic) {
+            if (pair.second > maxTraffic) {
+                maxTraffic = pair.second;
+                topTalker = pair.first;
+            }
+        }
+
+        std::string summaryStr = "Summary: " + std::to_string(tcpCount) + " TCP | " + std::to_string(udpCount) + " UDP";
+        if (maxTraffic > 0 && !topTalker.empty()) {
+            summaryStr += " | Top talker: " + topTalker + " (" + FormatBytes(maxTraffic) + ")";
+        }
+        if (summaryStr.length() < (size_t)width) {
+            summaryStr.append(width - summaryStr.length(), ' ');
+        } else if (summaryStr.length() > (size_t)width) {
+            summaryStr = summaryStr.substr(0, width);
+        }
+        std::cout << summaryStr;
+
+        DWORD waitResult = WaitForSingleObject(hInput, 100);
+        if (waitResult == WAIT_OBJECT_0) {
+            INPUT_RECORD inputRecords[128];
+            DWORD numRead = 0;
+            if (ReadConsoleInputW(hInput, inputRecords, 128, &numRead)) {
+                for (DWORD r = 0; r < numRead; ++r) {
+                    if (inputRecords[r].EventType == KEY_EVENT && inputRecords[r].Event.KeyEvent.bKeyDown) {
+                        WORD keyCode = inputRecords[r].Event.KeyEvent.wVirtualKeyCode;
+                        char ascChar = inputRecords[r].Event.KeyEvent.uChar.AsciiChar;
+
+                        if (keyCode == VK_ESCAPE || ascChar == 'q' || ascChar == 'Q') {
+                            running = false;
+                            break;
+                        } else if (keyCode == VK_UP) {
+                            if (scrollOffset > 0) scrollOffset--;
+                        } else if (keyCode == VK_DOWN) {
+                            if (scrollOffset < totalRows - viewportHeight) scrollOffset++;
+                        } else if (keyCode == VK_PRIOR) {
+                            scrollOffset -= viewportHeight;
+                            if (scrollOffset < 0) scrollOffset = 0;
+                        } else if (keyCode == VK_NEXT) {
+                            scrollOffset += viewportHeight;
+                            if (scrollOffset > totalRows - viewportHeight) scrollOffset = totalRows - viewportHeight;
+                        } else if (keyCode == VK_HOME) {
+                            scrollOffset = 0;
+                        } else if (keyCode == VK_END) {
+                            scrollOffset = totalRows - viewportHeight;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    SetConsoleMode(hInput, prevMode);
+    ShowConsoleCursor(true);
+}
+
+int main(int argc, char* argv[]) {
+    bool staticMode = false;
+
+    // Simple Argument Parsing
+    if (argc > 1) {
+        std::string arg = argv[1];
+        if (arg == "-h" || arg == "--help") {
+            std::cout << "portview v1.0 — Windows Port & Traffic Reviewer\n\n"
+                      << "Usage: portview.exe [options]\n\n"
+                      << "Options:\n"
+                      << "  -h, --help     Show this help message\n"
+                      << "  -v, --version  Show version information\n"
+                      << "  -s, --static   Print a single snapshot and exit (non-interactive)\n\n"
+                      << "Note: Run as administrator to see per-connection traffic stats.\n";
+            return 0;
+        } else if (arg == "-v" || arg == "--version") {
+            std::cout << "portview v1.0\n";
+            return 0;
+        } else if (arg == "-s" || arg == "--static") {
+            staticMode = true;
+        }
+    }
+
+    // If output is redirected to a file or pipe, default to static mode
+    if (!IsStdoutTerminal()) {
+        staticMode = true;
+    }
+
+    // Initialize Winsock (required for IpToString and network operations)
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        std::cerr << "Failed to initialize Winsock.\n";
+        return 1;
+    }
+
+    if (staticMode) {
+        PrintStaticOutput();
+        PauseIfSpawnedConsole();
+    } else {
+        RunInteractiveLoop();
+        PauseIfSpawnedConsole();
+    }
+
     WSACleanup();
     return 0;
 }
