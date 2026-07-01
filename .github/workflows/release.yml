@@ -31,23 +31,24 @@ jobs:
           CURRENT_TAG="${{ github.ref_name }}"
           echo "Current Tag: $CURRENT_TAG"
           
-          # Get list of tags sorted by version descending
-          TAGS=$(git tag --sort=-v:refname)
+          # Get list of version tags sorted by version descending
+          TAGS=$(git tag --list "v*" --sort=-v:refname)
           
           # Find the tag immediately following CURRENT_TAG in descending order
           PREV_TAG=$(echo "$TAGS" | grep -A 1 -x "$CURRENT_TAG" | tail -n 1)
           
-          if [ "$PREV_TAG" = "$CURRENT_TAG" ] || [ -z "$PREV_TAG" ]; then
-            echo "No previous tag found. Generating changelog from initial commit."
-            COMMITS=$(git log --pretty=format:"- %s (%h)")
-          else
-            echo "Previous Tag: $PREV_TAG"
-            COMMITS=$(git log "$PREV_TAG..$CURRENT_TAG" --pretty=format:"- %s (%h)")
-          fi
-          
           echo "### Changelog" > changelog.md
           echo "" >> changelog.md
-          echo "$COMMITS" >> changelog.md
+          
+          if [ "$PREV_TAG" = "$CURRENT_TAG" ] || [ -z "$PREV_TAG" ]; then
+            echo "No previous tag found. Generating changelog from initial commit."
+            git log --pretty=format:"- %s (%h)" >> changelog.md
+          else
+            echo "Previous Tag: $PREV_TAG"
+            git log "$PREV_TAG..$CURRENT_TAG" --pretty=format:"- %s (%h)" >> changelog.md
+          fi
+          
+          # Already appended directly to changelog.md to avoid shell expansion bugs
           
           echo "Generated Changelog:"
           cat changelog.md
