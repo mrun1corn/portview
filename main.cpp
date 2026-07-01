@@ -211,8 +211,15 @@ std::mutex g_fwMutex;
 std::unordered_map<std::string, FirewallStatus> g_fwCache;
 std::vector<FirewallRuleRow> g_fwRulesList;
 
-void ParseAndAddRules(const std::string& portsStr, const std::wstring& wname, const std::string& nameStr, const std::string& protoStr, bool enabled, bool allowed, std::vector<FirewallRuleRow>& tempRulesList, std::unordered_map<std::string, FirewallStatus>& tempCache) {
+void ParseAndAddRules(const std::string& portsStr, const std::wstring& wname, const std::string& nameStr, const std::string& protoStr, bool enabled, bool allowed, const std::string& ruleProcName, std::vector<FirewallRuleRow>& tempRulesList, std::unordered_map<std::string, FirewallStatus>& tempCache) {
     FirewallStatus status = allowed ? FW_STATUS_ALLOWED : FW_STATUS_BLOCKED;
+    std::string resolvedProc = ruleProcName;
+    if (resolvedProc == "-" || resolvedProc.empty()) {
+        size_t forIdx = nameStr.rfind(" for ");
+        if (forIdx != std::string::npos) {
+            resolvedProc = nameStr.substr(forIdx + 5);
+        }
+    }
     size_t start = 0;
     size_t end = portsStr.find(',');
     auto addRow = [&](const std::string& token) {
@@ -229,6 +236,7 @@ void ParseAndAddRules(const std::string& portsStr, const std::wstring& wname, co
             r.proto = protoStr;
             r.enabled = enabled;
             r.allowed = allowed;
+            r.procName = resolvedProc;
             tempRulesList.push_back(r);
         } else {
             size_t hyphen = token.find('-');
@@ -247,6 +255,7 @@ void ParseAndAddRules(const std::string& portsStr, const std::wstring& wname, co
                         r.proto = protoStr;
                         r.enabled = enabled;
                         r.allowed = allowed;
+                        r.procName = resolvedProc;
                         tempRulesList.push_back(r);
                     }
                 } catch (...) {}
@@ -263,6 +272,7 @@ void ParseAndAddRules(const std::string& portsStr, const std::wstring& wname, co
                     r.proto = protoStr;
                     r.enabled = enabled;
                     r.allowed = allowed;
+                    r.procName = resolvedProc;
                     tempRulesList.push_back(r);
                 } catch (...) {}
             }
@@ -349,6 +359,19 @@ void UpdateFirewallCache() {
                         std::string nameStr = WStringToString(wname);
                         if (bstrName) SysFreeString(bstrName);
 
+                        BSTR bstrApp = nullptr;
+                        std::string ruleProcName = "-";
+                        if (SUCCEEDED(pFwRule->get_ApplicationName(&bstrApp)) && bstrApp != nullptr) {
+                            std::wstring wapp(bstrApp);
+                            SysFreeString(bstrApp);
+                            size_t lastSlash = wapp.find_last_of(L"\\/");
+                            if (lastSlash != std::wstring::npos) {
+                                ruleProcName = WStringToString(wapp.substr(lastSlash + 1));
+                            } else {
+                                ruleProcName = WStringToString(wapp);
+                            }
+                        }
+
                         BSTR bstrPorts = nullptr;
                         if (SUCCEEDED(pFwRule->get_LocalPorts(&bstrPorts)) && bstrPorts != nullptr) {
                             std::wstring wports(bstrPorts, SysStringLen(bstrPorts));
@@ -356,7 +379,7 @@ void UpdateFirewallCache() {
 
                             std::string ports = WStringToString(wports);
                             if (!ports.empty()) {
-                                ParseAndAddRules(ports, wname, nameStr, protoStr, (enabled == VARIANT_TRUE), (action == NET_FW_ACTION_ALLOW), tempRulesList, tempCache);
+                                ParseAndAddRules(ports, wname, nameStr, protoStr, (enabled == VARIANT_TRUE), (action == NET_FW_ACTION_ALLOW), ruleProcName, tempRulesList, tempCache);
                             }
                         }
                     }
@@ -396,7 +419,22 @@ FirewallStatus QueryFirewallCache(u_short port, const std::string& proto) {
     return FW_STATUS_NONE;
 }
 
-bool AddFirewallRule(u_short port, bool isTcp) {
+std::wstring GetProcessImagePath(DWORD pid) {
+    if (pid == 0 || pid == 4) return L"";
+    std::wstring pathStr = L"";
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (hProcess != NULL) {
+        wchar_t path[MAX_PATH];
+        DWORD size = MAX_PATH;
+        if (QueryFullProcessImageNameW(hProcess, 0, path, &size)) {
+            pathStr = path;
+        }
+        CloseHandle(hProcess);
+    }
+    return pathStr;
+}
+
+bool AddFirewallRule(u_short port, bool isTcp, const std::wstring& procName, const std::wstring& appPath) {
     INetFwPolicy2* pNetFwPolicy2 = nullptr;
     HRESULT hr = CoCreateInstance(__uuidof(NetFwPolicy2), NULL, CLSCTX_INPROC_SERVER, __uuidof(INetFwPolicy2), (void**)&pNetFwPolicy2);
     if (FAILED(hr)) return false;
@@ -416,7 +454,7 @@ bool AddFirewallRule(u_short port, bool isTcp) {
         return false;
     }
 
-    std::wstring ruleName = L"PortView Allowed Port " + std::to_wstring(port) + (isTcp ? L" (TCP)" : L" (UDP)");
+    std::wstring ruleName = L"PortView Allowed Port " + std::to_wstring(port) + (isTcp ? L" (TCP)" : L" (UDP)") + L" for " + procName;
     BSTR bName = SysAllocString(ruleName.c_str());
     BSTR bDesc = SysAllocString(L"Inbound allow rule created by PortView");
     BSTR bPorts = SysAllocString(std::to_wstring(port).c_str());
@@ -428,6 +466,12 @@ bool AddFirewallRule(u_short port, bool isTcp) {
     pFwRule->put_Direction(NET_FW_RULE_DIR_IN);
     pFwRule->put_Action(NET_FW_ACTION_ALLOW);
     pFwRule->put_Enabled(VARIANT_TRUE);
+
+    if (!appPath.empty()) {
+        BSTR bApp = SysAllocString(appPath.c_str());
+        pFwRule->put_ApplicationName(bApp);
+        SysFreeString(bApp);
+    }
 
     hr = pFwRules->Add(pFwRule);
 
@@ -682,9 +726,27 @@ void BuildProcessSummaries(const std::vector<ConnectionRow>& connections, std::v
         groups[name].push_back(i);
     }
 
+    // Add idle processes from firewall rules
+    std::vector<FirewallRuleRow> rules;
+    {
+        std::lock_guard<std::mutex> lock(g_fwMutex);
+        rules = g_fwRulesList;
+    }
+
+    // Map process name to its custom rules
+    std::unordered_map<std::string, std::vector<FirewallRuleRow>> idleProcRules;
+    for (const auto& rule : rules) {
+        if (!rule.procName.empty() && rule.procName != "-") {
+            std::string name = rule.procName;
+            if (groups.find(name) == groups.end()) {
+                idleProcRules[name].push_back(rule);
+            }
+        }
+    }
+
+    // First process active groups
     for (const auto& pair : groups) {
         const std::string& name = pair.first;
-
         ProcessSummaryRow row;
         row.procName = name;
         row.sentBytes = 0;
@@ -703,7 +765,28 @@ void BuildProcessSummaries(const std::vector<ConnectionRow>& connections, std::v
         row.portsCount = static_cast<int>(uniquePorts.size());
         row.sentStr = (row.sentBytes > 0) ? FormatBytes(row.sentBytes) : "-";
         row.recvStr = (row.recvBytes > 0) ? FormatBytes(row.recvBytes) : "-";
+        summaries.push_back(row);
+    }
 
+    // Now process idle firewall-only groups
+    for (const auto& pair : idleProcRules) {
+        const std::string& name = pair.first;
+        ProcessSummaryRow row;
+        row.procName = name;
+        row.sentBytes = 0;
+        row.recvBytes = 0;
+        row.connsCount = 0;
+
+        std::unordered_set<u_short> uniquePorts;
+        for (const auto& r : pair.second) {
+            if (r.port > 0) {
+                uniquePorts.insert(r.port);
+            }
+        }
+
+        row.portsCount = static_cast<int>(uniquePorts.size());
+        row.sentStr = "-";
+        row.recvStr = "-";
         summaries.push_back(row);
     }
 
@@ -715,6 +798,9 @@ void BuildProcessSummaries(const std::vector<ConnectionRow>& connections, std::v
         }
         if (a.connsCount != b.connsCount) {
             return a.connsCount > b.connsCount;
+        }
+        if (a.portsCount != b.portsCount) {
+            return a.portsCount > b.portsCount;
         }
         return a.procName < b.procName;
     });
@@ -731,7 +817,9 @@ void BuildFirewallRuleRows(const std::vector<ConnectionRow>& connections, std::v
         rule.sentBytesVal = 0;
         rule.recvBytesVal = 0;
         rule.pid = 0;
-        rule.procName = "-";
+        if (rule.procName.empty()) {
+            rule.procName = "-";
+        }
         rule.state = "IDLE";
         rule.sentStr = "-";
         rule.recvStr = "-";
@@ -1053,10 +1141,11 @@ void RunInteractiveLoop() {
                 sprintf(headerBuf, "portview v1.0 [NON-ELEVATED] (Run as Admin for Traffic) | Arrows: Nav | Enter: View | A: Add Rule | Esc: Quit");
             }
         } else {
+            std::string pidStr = (selectedPid == 0) ? "IDLE" : "PID " + std::to_string(selectedPid);
             if (IsElevated()) {
-                sprintf(headerBuf, "Process: %s (PID %u) [ELEVATED] | A: Add Rule | Esc: Back", selectedProcName.c_str(), selectedPid);
+                sprintf(headerBuf, "Process: %s (%s) [ELEVATED] | A: Add Rule | Esc: Back", selectedProcName.c_str(), pidStr.c_str());
             } else {
-                sprintf(headerBuf, "Process: %s (PID %u) [NON-ELEVATED] | A: Add Rule | Esc: Back", selectedProcName.c_str(), selectedPid);
+                sprintf(headerBuf, "Process: %s (%s) [NON-ELEVATED] | A: Add Rule | Esc: Back", selectedProcName.c_str(), pidStr.c_str());
             }
         }
         std::string headerStr(headerBuf);
@@ -1168,7 +1257,9 @@ void RunInteractiveLoop() {
                                         int portVal = std::stoi(portStr);
                                         if (portVal > 0 && portVal <= 65535 && (protoStr == "tcp" || protoStr == "udp")) {
                                             bool isTcp = (protoStr == "tcp");
-                                            bool success = AddFirewallRule(static_cast<u_short>(portVal), isTcp);
+                                            std::wstring procNameW(selectedProcName.begin(), selectedProcName.end());
+                                            std::wstring appPath = GetProcessImagePath(selectedPid);
+                                            bool success = AddFirewallRule(static_cast<u_short>(portVal), isTcp, procNameW, appPath);
                                             statusMessageTimer = GetTickCount();
                                             if (success) {
                                                 statusMessage = "Firewall rule created successfully! Resolving cache...";
@@ -1226,11 +1317,19 @@ void RunInteractiveLoop() {
                             } else if (keyCode == VK_RETURN) {
                                 if (currentView == VIEW_SUMMARY && totalRows > 0) {
                                     selectedProcName = summaries[selectedIndex].procName;
+                                    selectedPid = 0;
+                                    for (const auto& conn : connections) {
+                                        if (conn.procName == selectedProcName && conn.pid > 0) {
+                                            selectedPid = conn.pid;
+                                            break;
+                                        }
+                                    }
                                     currentView = VIEW_DETAIL;
                                     selectedIndex = 0;
                                     scrollOffset = 0;
                                 }
-                            } else if (ascChar == 's' || ascChar == 'S') {
+                            }
+                            else if (ascChar == 's' || ascChar == 'S') {
                                 if (currentView == VIEW_DETAIL && totalRows > 0) {
                                     const auto& detailRow = detailRows[selectedIndex];
                                     std::wstring ruleName = L"";
@@ -1239,9 +1338,19 @@ void RunInteractiveLoop() {
                                         std::lock_guard<std::mutex> lock(g_fwMutex);
                                         for (const auto& r : g_fwRulesList) {
                                             if (r.port == detailRow.localPort && r.proto == detailRow.proto) {
-                                                ruleName = r.ruleName;
-                                                isEnabled = r.enabled;
-                                                break;
+                                                bool procMatch = (r.procName == selectedProcName);
+                                                if (!procMatch && (r.procName == "-" || r.procName.empty())) {
+                                                    std::string suffix = " for " + selectedProcName;
+                                                    if (r.ruleNameStr.length() >= suffix.length() &&
+                                                        r.ruleNameStr.compare(r.ruleNameStr.length() - suffix.length(), suffix.length(), suffix) == 0) {
+                                                        procMatch = true;
+                                                    }
+                                                }
+                                                if (procMatch) {
+                                                    ruleName = r.ruleName;
+                                                    isEnabled = r.enabled;
+                                                    break;
+                                                }
                                             }
                                         }
                                     }
@@ -1266,10 +1375,21 @@ void RunInteractiveLoop() {
                                         std::lock_guard<std::mutex> lock(g_fwMutex);
                                         for (const auto& r : g_fwRulesList) {
                                             if (r.port == detailRow.localPort && r.proto == detailRow.proto) {
-                                                ruleName = r.ruleName;
-                                                break;
+                                                bool procMatch = (r.procName == selectedProcName);
+                                                if (!procMatch && (r.procName == "-" || r.procName.empty())) {
+                                                    std::string suffix = " for " + selectedProcName;
+                                                    if (r.ruleNameStr.length() >= suffix.length() &&
+                                                        r.ruleNameStr.compare(r.ruleNameStr.length() - suffix.length(), suffix.length(), suffix) == 0) {
+                                                        procMatch = true;
+                                                    }
+                                                }
+                                                if (procMatch) {
+                                                    ruleName = r.ruleName;
+                                                    break;
+                                                }
                                             }
                                         }
+
                                     }
                                     statusMessageTimer = GetTickCount();
                                     if (!ruleName.empty()) {
