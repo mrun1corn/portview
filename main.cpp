@@ -121,6 +121,15 @@ std::string GetProcessName(DWORD pid) {
     cache[pid] = processName;
     return processName;
 }
+void PauseIfSpawnedConsole() {
+    DWORD processList[2];
+    DWORD count = GetConsoleProcessList(processList, 2);
+    if (count == 1) {
+        std::cout << "\nPress Enter to exit...";
+        std::cin.get();
+    }
+}
+
 int main(int argc, char* argv[]) {
     // Simple Argument Parsing
     if (argc > 1) {
@@ -143,6 +152,7 @@ int main(int argc, char* argv[]) {
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
         std::cerr << "Failed to initialize Winsock.\n";
+        PauseIfSpawnedConsole();
         return 1;
     }
 
@@ -162,6 +172,7 @@ int main(int argc, char* argv[]) {
     if (dwRetVal != NO_ERROR) {
         std::cerr << "Failed to retrieve TCP table. Error: " << dwRetVal << "\n";
         WSACleanup();
+        PauseIfSpawnedConsole();
         return 1;
     }
 
@@ -272,6 +283,7 @@ int main(int argc, char* argv[]) {
     }
     std::cout << "\n";
 
+    PauseIfSpawnedConsole();
     WSACleanup();
     return 0;
 }
