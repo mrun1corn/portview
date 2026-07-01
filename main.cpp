@@ -16,9 +16,11 @@
 #include <algorithm>
 #include <unordered_map>
 
+// Link with iphlpapi.lib and ws2_32.lib
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "ws2_32.lib")
 
+// Convert TCP connection state to string
 std::string TcpStateToString(DWORD state) {
     switch (state) {
         case MIB_TCP_STATE_CLOSED:     return "CLOSED";
@@ -119,8 +121,25 @@ std::string GetProcessName(DWORD pid) {
     cache[pid] = processName;
     return processName;
 }
-
 int main(int argc, char* argv[]) {
+    // Simple Argument Parsing
+    if (argc > 1) {
+        std::string arg = argv[1];
+        if (arg == "-h" || arg == "--help") {
+            std::cout << "portview v1.0 — Windows Port & Traffic Reviewer\n\n"
+                      << "Usage: portview.exe [options]\n\n"
+                      << "Options:\n"
+                      << "  -h, --help     Show this help message\n"
+                      << "  -v, --version  Show version information\n\n"
+                      << "Note: Run as administrator to see per-connection traffic stats.\n";
+            return 0;
+        } else if (arg == "-v" || arg == "--version") {
+            std::cout << "portview v1.0\n";
+            return 0;
+        }
+    }
+
+    // Initialize Winsock
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
         std::cerr << "Failed to initialize Winsock.\n";
@@ -128,8 +147,7 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "portview v1.0 — Windows Port & Traffic Reviewer\n\n";
-
-    // Enumerate TCP
+    // Enumerate TCP connections using GetExtendedTcpTable
     ULONG size = 0;
     DWORD dwRetVal = GetExtendedTcpTable(NULL, &size, TRUE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
     std::vector<char> buffer;
@@ -141,53 +159,76 @@ int main(int argc, char* argv[]) {
         dwRetVal = GetExtendedTcpTable(pTcpTable, &size, TRUE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
     }
 
-    if (dwRetVal == NO_ERROR && pTcpTable != nullptr) {
-        std::cout << "TCP Connections (" << pTcpTable->dwNumEntries << " active)\n";
-        std::cout << "PORT    REMOTE               STATE         PID    PROCESS            SENT        RECV\n";
-        bool elevated = IsElevated();
-        for (DWORD i = 0; i < pTcpTable->dwNumEntries; ++i) {
-            const auto& row = pTcpTable->table[i];
-            u_short localPort = ntohs((u_short)row.dwLocalPort);
-            std::string remoteIp = IpToString(row.dwRemoteAddr);
-            u_short remotePort = ntohs((u_short)row.dwRemotePort);
-            std::string remoteAddr = remoteIp + ":" + std::to_string(remotePort);
-            if (row.dwRemoteAddr == 0 && remotePort == 0) {
-                remoteAddr = "0.0.0.0:*";
-            }
-            std::string state = TcpStateToString(row.dwState);
-            DWORD pid = row.dwOwningPid;
-            std::string procName = GetProcessName(pid);
-
-            std::string sentStr = "—";
-            std::string recvStr = "—";
-
-            if (elevated) {
-                MIB_TCPROW mibRow;
-                mibRow.dwState = row.dwState;
-                mibRow.dwLocalAddr = row.dwLocalAddr;
-                mibRow.dwLocalPort = row.dwLocalPort;
-                mibRow.dwRemoteAddr = row.dwRemoteAddr;
-                mibRow.dwRemotePort = row.dwRemotePort;
-
-                TCP_ESTATS_DATA_RW_v0 rw;
-                rw.EnableCollection = TRUE;
-                SetPerTcpConnectionEStats(&mibRow, TcpConnectionEstatsData, (unsigned char*)&rw, 0, sizeof(rw), 0);
-
-                TCP_ESTATS_DATA_ROD_v0 dataRod;
-                ULONG rodSize = sizeof(dataRod);
-                DWORD res = GetPerTcpConnectionEStats(&mibRow, TcpConnectionEstatsData, NULL, 0, 0, NULL, 0, 0, (unsigned char*)&dataRod, 0, rodSize);
-                if (res == NO_ERROR) {
-                    sentStr = FormatBytes(dataRod.DataBytesOut);
-                    recvStr = FormatBytes(dataRod.DataBytesIn);
-                }
-            }
-
-            printf("%-7u %-20s %-13s %-6u %-18s %-11s %-11s\n",
-                   localPort, remoteAddr.c_str(), state.c_str(), pid, procName.c_str(), sentStr.c_str(), recvStr.c_str());
-        }
+    if (dwRetVal != NO_ERROR) {
+        std::cerr << "Failed to retrieve TCP table. Error: " << dwRetVal << "\n";
+        WSACleanup();
+        return 1;
     }
 
-    // Enumerate UDP
+    std::cout << "TCP Connections (" << pTcpTable->dwNumEntries << " active)\n";
+    std::cout << "PORT    REMOTE               STATE         PID    PROCESS            SENT        RECV\n";
+
+    bool elevated = IsElevated();
+    std::unordered_map<std::string, ULONG64> processTraffic;
+
+    for (DWORD i = 0; i < pTcpTable->dwNumEntries; ++i) {
+        auto row = pTcpTable->table[i];
+        
+        // Local Port (network byte order, convert to host byte order)
+        u_short localPort = ntohs((u_short)row.dwLocalPort);
+        
+        // Remote Address and Port
+        std::string remoteIp = IpToString(row.dwRemoteAddr);
+        u_short remotePort = ntohs((u_short)row.dwRemotePort);
+        std::string remoteAddr = remoteIp + ":" + std::to_string(remotePort);
+        if (row.dwRemoteAddr == 0 && remotePort == 0) {
+            remoteAddr = "0.0.0.0:*";
+        }
+
+        std::string state = TcpStateToString(row.dwState);
+        DWORD pid = row.dwOwningPid;
+        std::string procName = GetProcessName(pid);
+
+        std::string sentStr = "—";
+        std::string recvStr = "—";
+
+        if (elevated) {
+            // Try to enable and read stats.
+            // SetPerTcpConnectionEStats enables stats for this TCP connection row.
+            // However, SetPerTcpConnectionEStats requires a MIB_TCPROW or MIB_TCPROW_LH.
+            // Since pTcpTable has table[i] as MIB_TCPROW_OWNER_PID, we need to map or construct a MIB_TCPROW
+            // actually, SetPerTcpConnectionEStats expects TCP_ESTATS_TYPE, and an IP Helper TCP row representation.
+            // Under Windows SDK:
+            // SetPerTcpConnectionEStats(PMIB_TCPROW row, TCP_ESTATS_TYPE type, PBYTE path, ULONG pathVersion, ULONG pathSize)
+            // Let's build a MIB_TCPROW from row.
+            MIB_TCPROW mibRow;
+            mibRow.dwState = row.dwState;
+            mibRow.dwLocalAddr = row.dwLocalAddr;
+            mibRow.dwLocalPort = row.dwLocalPort;
+            mibRow.dwRemoteAddr = row.dwRemoteAddr;
+            mibRow.dwRemotePort = row.dwRemotePort;
+
+            TCP_ESTATS_DATA_RW_v0 rw;
+            rw.EnableCollection = TRUE;
+            SetPerTcpConnectionEStats(&mibRow, TcpConnectionEstatsData, (unsigned char*)&rw, 0, sizeof(rw), 0);
+
+            // Now query stats.
+            TCP_ESTATS_DATA_ROD_v0 dataRod;
+            ULONG rodSize = sizeof(dataRod);
+            DWORD res = GetPerTcpConnectionEStats(&mibRow, TcpConnectionEstatsData, NULL, 0, 0, NULL, 0, 0, (unsigned char*)&dataRod, 0, rodSize);
+            if (res == NO_ERROR) {
+                sentStr = FormatBytes(dataRod.DataBytesOut);
+                recvStr = FormatBytes(dataRod.DataBytesIn);
+                processTraffic[procName] += dataRod.DataBytesOut + dataRod.DataBytesIn;
+            }
+        }
+
+        printf("%-7u %-20s %-13s %-6u %-18s %-11s %-11s\n",
+               localPort, remoteAddr.c_str(), state.c_str(), pid, procName.c_str(), sentStr.c_str(), recvStr.c_str());
+    }
+
+
+    // Enumerate UDP listeners using GetExtendedUdpTable
     ULONG udpSize = 0;
     DWORD dwUdpRetVal = GetExtendedUdpTable(NULL, &udpSize, TRUE, AF_INET, UDP_TABLE_OWNER_PID, 0);
     std::vector<char> udpBuffer;
@@ -209,7 +250,27 @@ int main(int argc, char* argv[]) {
             std::string procName = GetProcessName(pid);
             printf("%-7u %-6u %-18s\n", localPort, pid, procName.c_str());
         }
+    } else {
+        std::cerr << "\nFailed to retrieve UDP table. Error: " << dwUdpRetVal << "\n";
     }
+
+    DWORD tcpCount = (dwRetVal == NO_ERROR && pTcpTable != nullptr) ? pTcpTable->dwNumEntries : 0;
+    DWORD udpCount = (dwUdpRetVal == NO_ERROR && pUdpTable != nullptr) ? pUdpTable->dwNumEntries : 0;
+
+    std::string topTalker = "";
+    ULONG64 maxTraffic = 0;
+    for (const auto& pair : processTraffic) {
+        if (pair.second > maxTraffic) {
+            maxTraffic = pair.second;
+            topTalker = pair.first;
+        }
+    }
+
+    std::cout << "\nSummary: " << tcpCount << " TCP | " << udpCount << " UDP";
+    if (maxTraffic > 0 && !topTalker.empty()) {
+        std::cout << " | Top talker: " << topTalker << " (" << FormatBytes(maxTraffic) << ")";
+    }
+    std::cout << "\n";
 
     WSACleanup();
     return 0;
