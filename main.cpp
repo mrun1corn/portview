@@ -787,7 +787,9 @@ void BuildProcessSummaries(const std::vector<ConnectionRow>& connections, std::v
         row.portsCount = static_cast<int>(uniquePorts.size());
         row.sentStr = "-";
         row.recvStr = "-";
-        summaries.push_back(row);
+        if (row.portsCount > 0 || row.connsCount > 0) {
+            summaries.push_back(row);
+        }
     }
 
     std::sort(summaries.begin(), summaries.end(), [](const ProcessSummaryRow& a, const ProcessSummaryRow& b) {
@@ -867,7 +869,7 @@ void PrintSummaryRow(const ProcessSummaryRow& row, bool selected, int width) {
     char rowBuf[512];
     if (selected) {
         sprintf(rowBuf, " > %-25s %-7d %-7d %-12s %-12s",
-                row.procName.c_str(), row.portsCount, row.connsCount, row.sentStr.c_str(), row.recvStr.c_str());
+                row.procName.substr(0, 25).c_str(), row.portsCount, row.connsCount, row.sentStr.c_str(), row.recvStr.c_str());
         std::string rowStr(rowBuf);
         if (rowStr.length() < (size_t)width - 1) {
             rowStr.append((width - 1) - rowStr.length(), ' ');
@@ -903,7 +905,7 @@ void PrintDetailRow(const ConnectionRow& row, bool selected, int width) {
         else if (row.fwStatus == FW_STATUS_BLOCKED) fwStr = "BLOCKED";
 
         sprintf(rowBuf, " > %-6s %-7u %-20s %-13s %-11s %-11s %-10s",
-                row.proto.c_str(), row.localPort, row.remoteAddr.c_str(), row.state.c_str(), row.sentStr.c_str(), row.recvStr.c_str(), fwStr.c_str());
+                row.proto.c_str(), row.localPort, row.remoteAddr.substr(0, 20).c_str(), row.state.c_str(), row.sentStr.c_str(), row.recvStr.c_str(), fwStr.c_str());
         std::string rowStr(rowBuf);
         if (rowStr.length() < (size_t)width - 1) {
             rowStr.append((width - 1) - rowStr.length(), ' ');
