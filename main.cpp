@@ -13,6 +13,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <unordered_map>
 
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "ws2_32.lib")
@@ -43,6 +44,48 @@ std::string IpToString(DWORD ipAddress) {
         return ipStr;
     }
     return "0.0.0.0";
+}
+
+std::string WStringToString(const std::wstring& wstr) {
+    if (wstr.empty()) return "";
+    int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
+    std::string strTo(sizeNeeded, 0);
+    WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], sizeNeeded, NULL, NULL);
+    return strTo;
+}
+
+std::string GetProcessName(DWORD pid) {
+    static std::unordered_map<DWORD, std::string> cache;
+    auto it = cache.find(pid);
+    if (it != cache.end()) {
+        return it->second;
+    }
+
+    if (pid == 0) {
+        return "System Idle Process";
+    } else if (pid == 4) {
+        return "System";
+    }
+
+    std::string processName = "Unknown";
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (hProcess != NULL) {
+        wchar_t path[MAX_PATH];
+        DWORD size = MAX_PATH;
+        if (QueryFullProcessImageNameW(hProcess, 0, path, &size)) {
+            std::wstring wpath(path);
+            size_t lastSlash = wpath.find_last_of(L"\\/");
+            if (lastSlash != std::wstring::npos) {
+                std::wstring wname = wpath.substr(lastSlash + 1);
+                processName = WStringToString(wname);
+            } else {
+                processName = WStringToString(wpath);
+            }
+        }
+        CloseHandle(hProcess);
+    }
+    cache[pid] = processName;
+    return processName;
 }
 
 int main(int argc, char* argv[]) {
@@ -80,8 +123,9 @@ int main(int argc, char* argv[]) {
             }
             std::string state = TcpStateToString(row.dwState);
             DWORD pid = row.dwOwningPid;
+            std::string procName = GetProcessName(pid);
             printf("%-7u %-20s %-13s %-6u %-18s %-11s %-11s\n",
-                   localPort, remoteAddr.c_str(), state.c_str(), pid, "todo.exe", "—", "—");
+                   localPort, remoteAddr.c_str(), state.c_str(), pid, procName.c_str(), "—", "—");
         }
     }
 
@@ -104,7 +148,8 @@ int main(int argc, char* argv[]) {
             const auto& row = pUdpTable->table[i];
             u_short localPort = ntohs((u_short)row.dwLocalPort);
             DWORD pid = row.dwOwningPid;
-            printf("%-7u %-6u %-18s\n", localPort, pid, "todo.exe");
+            std::string procName = GetProcessName(pid);
+            printf("%-7u %-6u %-18s\n", localPort, pid, procName.c_str());
         }
     }
 
