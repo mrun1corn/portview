@@ -15,6 +15,8 @@
 #include <string>
 #include <algorithm>
 #include <unordered_map>
+#include <netfw.h>
+#include <objbase.h>
 #include <thread>
 #include <mutex>
 #include <unordered_set>
@@ -182,6 +184,217 @@ std::string GetProcessName(DWORD pid) {
     cache[pid] = processName;
     return processName;
 }
+enum FirewallStatus {
+    FW_STATUS_NONE,      // No rule (default blocked)
+    FW_STATUS_ALLOWED,   // Explicitly allowed
+    FW_STATUS_BLOCKED    // Explicitly blocked
+};
+
+std::mutex g_fwMutex;
+std::unordered_map<std::string, FirewallStatus> g_fwCache;
+
+void UpdateFirewallCache() {
+    HRESULT hrCom = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+
+    INetFwPolicy2* pNetFwPolicy2 = nullptr;
+    HRESULT hr = CoCreateInstance(__uuidof(NetFwPolicy2), NULL, CLSCTX_INPROC_SERVER, __uuidof(INetFwPolicy2), (void**)&pNetFwPolicy2);
+    if (FAILED(hr)) {
+        if (SUCCEEDED(hrCom)) CoUninitialize();
+        return;
+    }
+
+    INetFwRules* pFwRules = nullptr;
+    hr = pNetFwPolicy2->get_Rules(&pFwRules);
+    if (FAILED(hr)) {
+        pNetFwPolicy2->Release();
+        if (SUCCEEDED(hrCom)) CoUninitialize();
+        return;
+    }
+
+    IUnknown* pEnumerator = nullptr;
+    hr = pFwRules->get__NewEnum(&pEnumerator);
+    if (FAILED(hr)) {
+        pFwRules->Release();
+        pNetFwPolicy2->Release();
+        if (SUCCEEDED(hrCom)) CoUninitialize();
+        return;
+    }
+
+    IEnumVARIANT* pVariant = nullptr;
+    hr = pEnumerator->QueryInterface(__uuidof(IEnumVARIANT), (void**)&pVariant);
+    pEnumerator->Release();
+    if (FAILED(hr)) {
+        pFwRules->Release();
+        pNetFwPolicy2->Release();
+        if (SUCCEEDED(hrCom)) CoUninitialize();
+        return;
+    }
+
+    std::unordered_map<std::string, FirewallStatus> tempCache;
+
+    VARIANT var;
+    VariantInit(&var);
+    ULONG cFetched = 0;
+    while (pVariant->Next(1, &var, &cFetched) == S_OK) {
+        if (var.vt == VT_DISPATCH && var.pdispVal != nullptr) {
+            INetFwRule* pFwRule = nullptr;
+            hr = var.pdispVal->QueryInterface(__uuidof(INetFwRule), (void**)&pFwRule);
+            if (SUCCEEDED(hr) && pFwRule != nullptr) {
+                VARIANT_BOOL enabled = VARIANT_FALSE;
+                NET_FW_RULE_DIRECTION dir = NET_FW_RULE_DIR_IN;
+                
+                pFwRule->get_Enabled(&enabled);
+                pFwRule->get_Direction(&dir);
+
+                if (enabled == VARIANT_TRUE && dir == NET_FW_RULE_DIR_IN) {
+                    NET_FW_ACTION action = NET_FW_ACTION_BLOCK;
+                    pFwRule->get_Action(&action);
+
+                    FirewallStatus status = (action == NET_FW_ACTION_ALLOW) ? FW_STATUS_ALLOWED : FW_STATUS_BLOCKED;
+                    LONG protocol = 0;
+                    pFwRule->get_Protocol(&protocol);
+
+                    std::string protoStr = "";
+                    if (protocol == NET_FW_IP_PROTOCOL_TCP) protoStr = "TCP";
+                    else if (protocol == NET_FW_IP_PROTOCOL_UDP) protoStr = "UDP";
+
+                    if (!protoStr.empty()) {
+                        BSTR bstrPorts = nullptr;
+                        if (SUCCEEDED(pFwRule->get_LocalPorts(&bstrPorts)) && bstrPorts != nullptr) {
+                            std::wstring wports(bstrPorts, SysStringLen(bstrPorts));
+                            SysFreeString(bstrPorts);
+
+                            std::string ports = WStringToString(wports);
+                            size_t start = 0;
+                            size_t end = ports.find(',');
+                            while (end != std::string::npos) {
+                                std::string token = ports.substr(start, end - start);
+                                if (!token.empty()) {
+                                    if (token == "*") {
+                                        tempCache["*:TCP"] = status;
+                                        tempCache["*:UDP"] = status;
+                                    } else {
+                                        size_t hyphen = token.find('-');
+                                        if (hyphen != std::string::npos) {
+                                            try {
+                                                int s = std::stoi(token.substr(0, hyphen));
+                                                int e = std::stoi(token.substr(hyphen + 1));
+                                                for (int p = s; p <= e; ++p) {
+                                                    tempCache[std::to_string(p) + ":" + protoStr] = status;
+                                                }
+                                            } catch (...) {}
+                                        } else {
+                                            tempCache[token + ":" + protoStr] = status;
+                                        }
+                                    }
+                                }
+                                start = end + 1;
+                                end = ports.find(',', start);
+                            }
+                            std::string token = ports.substr(start);
+                            if (!token.empty()) {
+                                if (token == "*") {
+                                    tempCache["*:TCP"] = status;
+                                    tempCache["*:UDP"] = status;
+                                } else {
+                                    size_t hyphen = token.find('-');
+                                    if (hyphen != std::string::npos) {
+                                        try {
+                                            int s = std::stoi(token.substr(0, hyphen));
+                                            int e = std::stoi(token.substr(hyphen + 1));
+                                            for (int p = s; p <= e; ++p) {
+                                                tempCache[std::to_string(p) + ":" + protoStr] = status;
+                                            }
+                                        } catch (...) {}
+                                    } else {
+                                        tempCache[token + ":" + protoStr] = status;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                pFwRule->Release();
+            }
+        }
+        VariantClear(&var);
+    }
+
+    pVariant->Release();
+    pFwRules->Release();
+    pNetFwPolicy2->Release();
+
+    {
+        std::lock_guard<std::mutex> lock(g_fwMutex);
+        g_fwCache = std::move(tempCache);
+    }
+
+    if (SUCCEEDED(hrCom)) {
+        CoUninitialize();
+    }
+}
+
+FirewallStatus QueryFirewallCache(u_short port, const std::string& proto) {
+    std::lock_guard<std::mutex> lock(g_fwMutex);
+    std::string key = std::to_string(port) + ":" + proto;
+    auto it = g_fwCache.find(key);
+    if (it != g_fwCache.end()) {
+        return it->second;
+    }
+    auto itWildcard = g_fwCache.find("*:" + proto);
+    if (itWildcard != g_fwCache.end()) {
+        return itWildcard->second;
+    }
+    return FW_STATUS_NONE;
+}
+
+bool AddFirewallRule(u_short port, bool isTcp) {
+    INetFwPolicy2* pNetFwPolicy2 = nullptr;
+    HRESULT hr = CoCreateInstance(__uuidof(NetFwPolicy2), NULL, CLSCTX_INPROC_SERVER, __uuidof(INetFwPolicy2), (void**)&pNetFwPolicy2);
+    if (FAILED(hr)) return false;
+
+    INetFwRules* pFwRules = nullptr;
+    hr = pNetFwPolicy2->get_Rules(&pFwRules);
+    if (FAILED(hr)) {
+        pNetFwPolicy2->Release();
+        return false;
+    }
+
+    INetFwRule* pFwRule = nullptr;
+    hr = CoCreateInstance(__uuidof(NetFwRule), NULL, CLSCTX_INPROC_SERVER, __uuidof(INetFwRule), (void**)&pFwRule);
+    if (FAILED(hr)) {
+        pFwRules->Release();
+        pNetFwPolicy2->Release();
+        return false;
+    }
+
+    std::wstring ruleName = L"PortView Allowed Port " + std::to_wstring(port) + (isTcp ? L" (TCP)" : L" (UDP)");
+    BSTR bName = SysAllocString(ruleName.c_str());
+    BSTR bDesc = SysAllocString(L"Inbound allow rule created by PortView");
+    BSTR bPorts = SysAllocString(std::to_wstring(port).c_str());
+
+    pFwRule->put_Name(bName);
+    pFwRule->put_Description(bDesc);
+    pFwRule->put_Protocol(isTcp ? NET_FW_IP_PROTOCOL_TCP : NET_FW_IP_PROTOCOL_UDP);
+    pFwRule->put_LocalPorts(bPorts);
+    pFwRule->put_Direction(NET_FW_RULE_DIR_IN);
+    pFwRule->put_Action(NET_FW_ACTION_ALLOW);
+    pFwRule->put_Enabled(VARIANT_TRUE);
+
+    hr = pFwRules->Add(pFwRule);
+
+    SysFreeString(bName);
+    SysFreeString(bDesc);
+    SysFreeString(bPorts);
+
+    pFwRule->Release();
+    pFwRules->Release();
+    pNetFwPolicy2->Release();
+
+    return SUCCEEDED(hr);
+}
+
+
 struct ConnectionRow {
     std::string proto;
     u_short localPort;
@@ -194,7 +407,9 @@ struct ConnectionRow {
     ULONG64 sentBytesVal;
     ULONG64 recvBytesVal;
     ULONG64 totalBytes;
+    FirewallStatus fwStatus;
 };
+
 
 bool IsStdoutTerminal() {
     return _isatty(_fileno(stdout)) != 0;
@@ -301,6 +516,7 @@ void LoadData(std::vector<ConnectionRow>& connections, std::unordered_map<std::s
                     processTraffic[conn.procName] += conn.totalBytes;
                 }
             }
+            conn.fwStatus = QueryFirewallCache(conn.localPort, conn.proto);
             connections.push_back(conn);
         }
     }
@@ -334,7 +550,7 @@ void LoadData(std::vector<ConnectionRow>& connections, std::unordered_map<std::s
             conn.sentBytesVal = 0;
             conn.recvBytesVal = 0;
             conn.totalBytes = 0;
-
+            conn.fwStatus = QueryFirewallCache(conn.localPort, conn.proto);
             connections.push_back(conn);
         }
     }
@@ -454,8 +670,12 @@ void PrintSummaryRow(const ProcessSummaryRow& row, bool selected, int width) {
 void PrintDetailRow(const ConnectionRow& row, bool selected, int width) {
     if (selected) {
         char rowBuf[512];
-        sprintf(rowBuf, " > %-6s %-7u %-20s %-13s %-11s %-11s",
-                row.proto.c_str(), row.localPort, row.remoteAddr.c_str(), row.state.c_str(), row.sentStr.c_str(), row.recvStr.c_str());
+        std::string fwStr = "DEFAULT";
+        if (row.fwStatus == FW_STATUS_ALLOWED) fwStr = "ALLOWED";
+        else if (row.fwStatus == FW_STATUS_BLOCKED) fwStr = "BLOCKED";
+
+        sprintf(rowBuf, " > %-6s %-7u %-20s %-13s %-11s %-11s %-10s",
+                row.proto.c_str(), row.localPort, row.remoteAddr.c_str(), row.state.c_str(), row.sentStr.c_str(), row.recvStr.c_str(), fwStr.c_str());
         std::string rowStr(rowBuf);
         if (rowStr.length() < (size_t)width - 1) {
             rowStr.append((width - 1) - rowStr.length(), ' ');
@@ -479,10 +699,14 @@ void PrintDetailRow(const ConnectionRow& row, bool selected, int width) {
         if (row.sentStr != "-") printf("\x1b[92m%-11s\x1b[0m ", row.sentStr.c_str());
         else printf("\x1b[90m%-11s\x1b[0m ", "-");
 
-        if (row.recvStr != "-") printf("\x1b[92m%-11s\x1b[0m", row.recvStr.c_str());
-        else printf("\x1b[90m%-11s\x1b[0m", "-");
+        if (row.recvStr != "-") printf("\x1b[92m%-11s\x1b[0m ", row.recvStr.c_str());
+        else printf("\x1b[90m%-11s\x1b[0m ", "-");
 
-        int visualLength = 3 + 7 + 8 + 21 + 14 + 12 + 11;
+        if (row.fwStatus == FW_STATUS_ALLOWED) printf("\x1b[92m%-10s\x1b[0m", "ALLOWED");
+        else if (row.fwStatus == FW_STATUS_BLOCKED) printf("\x1b[91m%-10s\x1b[0m", "BLOCKED");
+        else printf("\x1b[90m%-10s\x1b[0m", "DEFAULT");
+
+        int visualLength = 3 + 7 + 8 + 21 + 14 + 12 + 12 + 10;
         if (visualLength < width - 1) {
             std::cout << std::string((width - 1) - visualLength, ' ');
         }
@@ -540,6 +764,10 @@ void RunInteractiveLoop() {
     std::string selectedProcName = "";
     int selectedIndex = 0;
     int scrollOffset = 0;
+    bool enteringRule = false;
+    std::string inputBuffer = "";
+    std::string statusMessage = "";
+    DWORD statusMessageTimer = 0;
 
     bool running = true;
     DWORD lastRefreshTime = 0;
@@ -554,6 +782,7 @@ void RunInteractiveLoop() {
     std::vector<ProcessSummaryRow> summaries;
     BuildProcessSummaries(connections, summaries);
     lastRefreshTime = GetTickCount();
+    std::thread(UpdateFirewallCache).detach();
 
     ShowConsoleCursor(false);
 
@@ -576,6 +805,12 @@ void RunInteractiveLoop() {
             LoadData(connections, processTraffic, tcpCount, udpCount);
             BuildProcessSummaries(connections, summaries);
             lastRefreshTime = currentTime;
+        }
+
+        static DWORD lastFwRefresh = 0;
+        if (currentTime - lastFwRefresh >= 10000) {
+            std::thread(UpdateFirewallCache).detach();
+            lastFwRefresh = currentTime;
         }
 
         // Build filtered view-specific records
@@ -614,9 +849,9 @@ void RunInteractiveLoop() {
         // Render Banner
         char headerBuf[256];
         if (currentView == VIEW_SUMMARY) {
-            sprintf(headerBuf, "portview v1.0 | Up/Down: Select | Enter: View Ports | Esc/Q: Quit");
+            sprintf(headerBuf, "portview v1.0 | Up/Down: Select | Enter: View Ports | A: Add Port Rule | Esc/Q: Quit");
         } else {
-            sprintf(headerBuf, "Process: %s (PID %u) | Up/Down: Scroll | Backspace/Esc: Back", selectedProcName.c_str(), selectedPid);
+            sprintf(headerBuf, "Process: %s (PID %u) | A: Add Port Rule | Backspace/Esc: Back", selectedProcName.c_str(), selectedPid);
         }
         std::string headerStr(headerBuf);
         if (headerStr.length() < (size_t)width - 1) {
@@ -632,8 +867,8 @@ void RunInteractiveLoop() {
             sprintf(colBuf, "   %-6s %-18s %-15s %-11s %-11s",
                     "PID", "PROCESS", "CONNS", "SENT", "RECV");
         } else {
-            sprintf(colBuf, "   %-6s %-7s %-20s %-13s %-11s %-11s",
-                    "PROTO", "PORT", "REMOTE", "STATE", "SENT", "RECV");
+            sprintf(colBuf, "   %-6s %-7s %-20s %-13s %-11s %-11s %-10s",
+                    "PROTO", "PORT", "REMOTE", "STATE", "SENT", "RECV", "FIREWALL");
         }
         std::string colStr(colBuf);
         if (colStr.length() < (size_t)width - 1) {
@@ -659,19 +894,28 @@ void RunInteractiveLoop() {
             }
         }
 
-        // Render Summary Line (fixed at the bottom)
-        std::string topTalker = "";
-        ULONG64 maxTraffic = 0;
-        for (const auto& pair : processTraffic) {
-            if (pair.second > maxTraffic) {
-                maxTraffic = pair.second;
-                topTalker = pair.first;
-            }
-        }
+        std::string summaryStr = "";
+        if (enteringRule) {
+            summaryStr = "Add Inbound Allow Rule -> Enter Port (e.g., 80/tcp or 53/udp): " + inputBuffer + "_ [Backspace: Delete, Enter: Submit, Esc: Cancel]";
+        } else {
+            if (!statusMessage.empty() && currentTime - statusMessageTimer < 4000) {
+                summaryStr = statusMessage;
+            } else {
+                statusMessage.clear();
+                std::string topTalker = "";
+                ULONG64 maxTraffic = 0;
+                for (const auto& pair : processTraffic) {
+                    if (pair.second > maxTraffic) {
+                        maxTraffic = pair.second;
+                        topTalker = pair.first;
+                    }
+                }
 
-        std::string summaryStr = "Summary: " + std::to_string(tcpCount) + " TCP | " + std::to_string(udpCount) + " UDP";
-        if (maxTraffic > 0 && !topTalker.empty()) {
-            summaryStr += " | Top talker: " + topTalker + " (" + FormatBytes(maxTraffic) + ")";
+                summaryStr = "Summary: " + std::to_string(tcpCount) + " TCP | " + std::to_string(udpCount) + " UDP";
+                if (maxTraffic > 0 && !topTalker.empty()) {
+                    summaryStr += " | Top talker: " + topTalker + " (" + FormatBytes(maxTraffic) + ")";
+                }
+            }
         }
         if (summaryStr.length() < (size_t)width - 1) {
             summaryStr.append((width - 1) - summaryStr.length(), ' ');
@@ -691,55 +935,101 @@ void RunInteractiveLoop() {
                         WORD keyCode = inputRecords[r].Event.KeyEvent.wVirtualKeyCode;
                         char ascChar = inputRecords[r].Event.KeyEvent.uChar.AsciiChar;
 
-                        if (keyCode == VK_ESCAPE || ascChar == 'q' || ascChar == 'Q') {
-                            if (currentView == VIEW_DETAIL) {
-                                currentView = VIEW_SUMMARY;
-                                selectedIndex = 0;
-                                for (size_t k = 0; k < summaries.size(); ++k) {
-                                    if (summaries[k].pid == selectedPid) {
-                                        selectedIndex = static_cast<int>(k);
-                                        break;
-                                    }
+                        if (enteringRule) {
+                            if (keyCode == VK_ESCAPE) {
+                                enteringRule = false;
+                                inputBuffer.clear();
+                            } else if (keyCode == VK_BACK) {
+                                if (!inputBuffer.empty()) inputBuffer.pop_back();
+                            } else if (keyCode == VK_RETURN) {
+                                bool parsed = false;
+                                size_t slash = inputBuffer.find('/');
+                                if (slash != std::string::npos) {
+                                    std::string portStr = inputBuffer.substr(0, slash);
+                                    std::string protoStr = inputBuffer.substr(slash + 1);
+                                    std::transform(protoStr.begin(), protoStr.end(), protoStr.begin(), ::tolower);
+                                    try {
+                                        int portVal = std::stoi(portStr);
+                                        if (portVal > 0 && portVal <= 65535 && (protoStr == "tcp" || protoStr == "udp")) {
+                                            bool isTcp = (protoStr == "tcp");
+                                            bool success = AddFirewallRule(static_cast<u_short>(portVal), isTcp);
+                                            statusMessageTimer = GetTickCount();
+                                            if (success) {
+                                                statusMessage = "Firewall rule created successfully! Resolving cache...";
+                                                std::thread(UpdateFirewallCache).detach();
+                                            } else {
+                                                statusMessage = "Error: Failed to create firewall rule. Ensure running elevated.";
+                                            }
+                                            parsed = true;
+                                        }
+                                    } catch (...) {}
                                 }
-                                scrollOffset = 0;
-                            } else {
-                                running = false;
-                            }
-                            break;
-                        } else if (keyCode == VK_BACK) {
-                            if (currentView == VIEW_DETAIL) {
-                                currentView = VIEW_SUMMARY;
-                                selectedIndex = 0;
-                                for (size_t k = 0; k < summaries.size(); ++k) {
-                                    if (summaries[k].pid == selectedPid) {
-                                        selectedIndex = static_cast<int>(k);
-                                        break;
-                                    }
+                                if (!parsed) {
+                                    statusMessageTimer = GetTickCount();
+                                    statusMessage = "Invalid rule format! Use <port>/<tcp|udp> (e.g. 8080/tcp).";
                                 }
-                                scrollOffset = 0;
+                                enteringRule = false;
+                                inputBuffer.clear();
+                            } else if (std::isalnum(static_cast<unsigned char>(ascChar)) || ascChar == '/') {
+                                if (inputBuffer.length() < 30) {
+                                    inputBuffer += ascChar;
+                                }
                             }
-                        } else if (keyCode == VK_RETURN) {
-                            if (currentView == VIEW_SUMMARY && totalRows > 0) {
-                                selectedPid = summaries[selectedIndex].pid;
-                                selectedProcName = summaries[selectedIndex].procName;
-                                currentView = VIEW_DETAIL;
+                        } else {
+                            if (ascChar == 'a' || ascChar == 'A') {
+                                enteringRule = true;
+                                inputBuffer.clear();
+                                statusMessage.clear();
+                            } else if (keyCode == VK_ESCAPE || ascChar == 'q' || ascChar == 'Q') {
+                                if (currentView == VIEW_DETAIL) {
+                                    currentView = VIEW_SUMMARY;
+                                    selectedIndex = 0;
+                                    for (size_t k = 0; k < summaries.size(); ++k) {
+                                        if (summaries[k].pid == selectedPid) {
+                                            selectedIndex = static_cast<int>(k);
+                                            break;
+                                        }
+                                    }
+                                    scrollOffset = 0;
+                                } else {
+                                    running = false;
+                                }
+                                break;
+                            } else if (keyCode == VK_BACK) {
+                                if (currentView == VIEW_DETAIL) {
+                                    currentView = VIEW_SUMMARY;
+                                    selectedIndex = 0;
+                                    for (size_t k = 0; k < summaries.size(); ++k) {
+                                        if (summaries[k].pid == selectedPid) {
+                                            selectedIndex = static_cast<int>(k);
+                                            break;
+                                        }
+                                    }
+                                    scrollOffset = 0;
+                                }
+                            } else if (keyCode == VK_RETURN) {
+                                if (currentView == VIEW_SUMMARY && totalRows > 0) {
+                                    selectedPid = summaries[selectedIndex].pid;
+                                    selectedProcName = summaries[selectedIndex].procName;
+                                    currentView = VIEW_DETAIL;
+                                    selectedIndex = 0;
+                                    scrollOffset = 0;
+                                }
+                            } else if (keyCode == VK_UP) {
+                                if (selectedIndex > 0) selectedIndex--;
+                            } else if (keyCode == VK_DOWN) {
+                                if (selectedIndex < totalRows - 1) selectedIndex++;
+                            } else if (keyCode == VK_PRIOR) {
+                                selectedIndex -= viewportHeight;
+                                if (selectedIndex < 0) selectedIndex = 0;
+                            } else if (keyCode == VK_NEXT) {
+                                selectedIndex += viewportHeight;
+                                if (selectedIndex >= totalRows) selectedIndex = totalRows - 1;
+                            } else if (keyCode == VK_HOME) {
                                 selectedIndex = 0;
-                                scrollOffset = 0;
+                            } else if (keyCode == VK_END) {
+                                selectedIndex = totalRows - 1;
                             }
-                        } else if (keyCode == VK_UP) {
-                            if (selectedIndex > 0) selectedIndex--;
-                        } else if (keyCode == VK_DOWN) {
-                            if (selectedIndex < totalRows - 1) selectedIndex++;
-                        } else if (keyCode == VK_PRIOR) {
-                            selectedIndex -= viewportHeight;
-                            if (selectedIndex < 0) selectedIndex = 0;
-                        } else if (keyCode == VK_NEXT) {
-                            selectedIndex += viewportHeight;
-                            if (selectedIndex >= totalRows) selectedIndex = totalRows - 1;
-                        } else if (keyCode == VK_HOME) {
-                            selectedIndex = 0;
-                        } else if (keyCode == VK_END) {
-                            selectedIndex = totalRows - 1;
                         }
                     }
                 }
@@ -780,6 +1070,8 @@ int main(int argc, char* argv[]) {
         staticMode = true;
     }
 
+    HRESULT hrCom = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+
     // Initialize Winsock (required for IpToString and network operations)
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
@@ -797,6 +1089,10 @@ int main(int argc, char* argv[]) {
     } else {
         RunInteractiveLoop();
         PauseIfSpawnedConsole();
+    }
+
+    if (SUCCEEDED(hrCom)) {
+        CoUninitialize();
     }
 
     WSACleanup();
