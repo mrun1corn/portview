@@ -131,6 +131,8 @@ struct ConnectionRow {
     std::string procName;
     std::string sentStr;
     std::string recvStr;
+    ULONG64 sentBytesVal;
+    ULONG64 recvBytesVal;
     ULONG64 totalBytes;
 };
 
@@ -216,6 +218,8 @@ void LoadData(std::vector<ConnectionRow>& connections, std::unordered_map<std::s
             conn.procName = GetProcessName(conn.pid);
             conn.sentStr = "-";
             conn.recvStr = "-";
+            conn.sentBytesVal = 0;
+            conn.recvBytesVal = 0;
             conn.totalBytes = 0;
 
             if (elevated) {
@@ -236,6 +240,8 @@ void LoadData(std::vector<ConnectionRow>& connections, std::unordered_map<std::s
                 if (res == NO_ERROR) {
                     conn.sentStr = FormatBytes(dataRod.DataBytesOut);
                     conn.recvStr = FormatBytes(dataRod.DataBytesIn);
+                    conn.sentBytesVal = dataRod.DataBytesOut;
+                    conn.recvBytesVal = dataRod.DataBytesIn;
                     conn.totalBytes = dataRod.DataBytesOut + dataRod.DataBytesIn;
                     processTraffic[conn.procName] += conn.totalBytes;
                 }
@@ -270,6 +276,8 @@ void LoadData(std::vector<ConnectionRow>& connections, std::unordered_map<std::s
             conn.procName = GetProcessName(conn.pid);
             conn.sentStr = "-";
             conn.recvStr = "-";
+            conn.sentBytesVal = 0;
+            conn.recvBytesVal = 0;
             conn.totalBytes = 0;
 
             connections.push_back(conn);
@@ -282,6 +290,63 @@ void LoadData(std::vector<ConnectionRow>& connections, std::unordered_map<std::s
             return a.proto == "TCP";
         }
         return a.localPort < b.localPort;
+    });
+}
+
+struct ProcessSummaryRow {
+    DWORD pid;
+    std::string procName;
+    int tcpCount;
+    int udpCount;
+    ULONG64 sentBytes;
+    ULONG64 recvBytes;
+    std::string sentStr;
+    std::string recvStr;
+};
+
+void BuildProcessSummaries(const std::vector<ConnectionRow>& connections, std::vector<ProcessSummaryRow>& summaries) {
+    summaries.clear();
+    std::unordered_map<DWORD, size_t> pidToIndex;
+
+    for (const auto& conn : connections) {
+        auto it = pidToIndex.find(conn.pid);
+        if (it == pidToIndex.end()) {
+            ProcessSummaryRow row;
+            row.pid = conn.pid;
+            row.procName = conn.procName;
+            row.tcpCount = 0;
+            row.udpCount = 0;
+            row.sentBytes = 0;
+            row.recvBytes = 0;
+            summaries.push_back(row);
+            pidToIndex[conn.pid] = summaries.size() - 1;
+            it = pidToIndex.find(conn.pid);
+        }
+
+        auto& row = summaries[it->second];
+        if (conn.proto == "TCP") {
+            row.tcpCount++;
+            row.sentBytes += conn.sentBytesVal;
+            row.recvBytes += conn.recvBytesVal;
+        } else {
+            row.udpCount++;
+        }
+    }
+
+    // Format strings
+    for (auto& row : summaries) {
+        row.sentStr = (row.sentBytes > 0) ? FormatBytes(row.sentBytes) : "-";
+        row.recvStr = (row.recvBytes > 0) ? FormatBytes(row.recvBytes) : "-";
+    }
+
+    // Sort by total connections descending, then by process name
+    std::sort(summaries.begin(), summaries.end(), [](const ProcessSummaryRow& a, const ProcessSummaryRow& b) {
+        int aConns = a.tcpCount + a.udpCount;
+        int bConns = b.tcpCount + b.udpCount;
+        if (aConns != bConns) {
+            return aConns > bConns;
+        }
+        return a.procName < b.procName;
     });
 }
 
@@ -328,8 +393,14 @@ void PrintStaticOutput() {
 }
 
 void RunInteractiveLoop() {
-    bool running = true;
+    enum ViewState { VIEW_SUMMARY, VIEW_DETAIL };
+    ViewState currentView = VIEW_SUMMARY;
+    DWORD selectedPid = 0;
+    std::string selectedProcName = "";
+    int selectedIndex = 0;
     int scrollOffset = 0;
+
+    bool running = true;
     DWORD lastRefreshTime = 0;
     const DWORD refreshIntervalMs = 1500;
 
@@ -339,6 +410,8 @@ void RunInteractiveLoop() {
     DWORD udpCount = 0;
 
     LoadData(connections, processTraffic, tcpCount, udpCount);
+    std::vector<ProcessSummaryRow> summaries;
+    BuildProcessSummaries(connections, summaries);
     lastRefreshTime = GetTickCount();
 
     ShowConsoleCursor(false);
@@ -360,10 +433,34 @@ void RunInteractiveLoop() {
         DWORD currentTime = GetTickCount();
         if (currentTime - lastRefreshTime >= refreshIntervalMs) {
             LoadData(connections, processTraffic, tcpCount, udpCount);
+            BuildProcessSummaries(connections, summaries);
             lastRefreshTime = currentTime;
         }
 
-        int totalRows = static_cast<int>(connections.size());
+        // Build filtered view-specific records
+        std::vector<ConnectionRow> detailRows;
+        if (currentView == VIEW_DETAIL) {
+            for (const auto& conn : connections) {
+                if (conn.pid == selectedPid) {
+                    detailRows.push_back(conn);
+                }
+            }
+        }
+
+        int totalRows = (currentView == VIEW_SUMMARY) ? static_cast<int>(summaries.size()) : static_cast<int>(detailRows.size());
+
+        // Clamp selectedIndex
+        if (selectedIndex < 0) selectedIndex = 0;
+        if (selectedIndex >= totalRows) selectedIndex = totalRows - 1;
+        if (totalRows == 0) selectedIndex = 0;
+
+        // Auto-scroll logic based on selectedIndex
+        if (selectedIndex < scrollOffset) {
+            scrollOffset = selectedIndex;
+        }
+        if (selectedIndex >= scrollOffset + viewportHeight) {
+            scrollOffset = selectedIndex - viewportHeight + 1;
+        }
         if (scrollOffset > totalRows - viewportHeight) {
             scrollOffset = totalRows - viewportHeight;
         }
@@ -373,8 +470,13 @@ void RunInteractiveLoop() {
 
         SetCursorPosition(0, 0);
 
+        // Render Banner
         char headerBuf[256];
-        sprintf(headerBuf, "portview v1.0 | Arrow Keys: Scroll | Page Up/Down | Esc/Q: Quit");
+        if (currentView == VIEW_SUMMARY) {
+            sprintf(headerBuf, "portview v1.0 | Up/Down: Select | Enter: View Ports | Esc/Q: Quit");
+        } else {
+            sprintf(headerBuf, "Process: %s (PID %u) | Up/Down: Scroll | Backspace/Esc: Back", selectedProcName.c_str(), selectedPid);
+        }
         std::string headerStr(headerBuf);
         if (headerStr.length() < (size_t)width - 1) {
             headerStr.append((width - 1) - headerStr.length(), ' ');
@@ -383,9 +485,15 @@ void RunInteractiveLoop() {
         }
         std::cout << headerStr << "\n";
 
+        // Render Column Headers
         char colBuf[256];
-        sprintf(colBuf, "%-6s %-7s %-20s %-13s %-6s %-18s %-11s %-11s",
-                "PROTO", "PORT", "REMOTE", "STATE", "PID", "PROCESS", "SENT", "RECV");
+        if (currentView == VIEW_SUMMARY) {
+            sprintf(colBuf, "   %-6s %-18s %-15s %-11s %-11s",
+                    "PID", "PROCESS", "CONNS", "SENT", "RECV");
+        } else {
+            sprintf(colBuf, "   %-6s %-7s %-20s %-13s %-11s %-11s",
+                    "PROTO", "PORT", "REMOTE", "STATE", "SENT", "RECV");
+        }
         std::string colStr(colBuf);
         if (colStr.length() < (size_t)width - 1) {
             colStr.append((width - 1) - colStr.length(), ' ');
@@ -394,15 +502,25 @@ void RunInteractiveLoop() {
         }
         std::cout << colStr << "\n";
 
+        // Render Viewport rows
         for (int i = 0; i < viewportHeight; ++i) {
             int idx = scrollOffset + i;
             if (idx < totalRows) {
-                const auto& row = connections[idx];
+                char prefix = (idx == selectedIndex) ? '>' : ' ';
                 char rowBuf[512];
-                sprintf(rowBuf, "%-6s %-7u %-20s %-13s %-6u %-18s %-11s %-11s",
-                        row.proto.c_str(), row.localPort, row.remoteAddr.c_str(),
-                        row.state.c_str(), row.pid, row.procName.c_str(),
-                        row.sentStr.c_str(), row.recvStr.c_str());
+                if (currentView == VIEW_SUMMARY) {
+                    const auto& row = summaries[idx];
+                    std::string connsStr = std::to_string(row.tcpCount) + " TCP";
+                    if (row.udpCount > 0) {
+                        connsStr += " | " + std::to_string(row.udpCount) + " UDP";
+                    }
+                    sprintf(rowBuf, "%c  %-6u %-18s %-15s %-11s %-11s",
+                            prefix, row.pid, row.procName.c_str(), connsStr.c_str(), row.sentStr.c_str(), row.recvStr.c_str());
+                } else {
+                    const auto& row = detailRows[idx];
+                    sprintf(rowBuf, "%c  %-6s %-7u %-20s %-13s %-11s %-11s",
+                            prefix, row.proto.c_str(), row.localPort, row.remoteAddr.c_str(), row.state.c_str(), row.sentStr.c_str(), row.recvStr.c_str());
+                }
                 std::string rowStr(rowBuf);
                 if (rowStr.length() < (size_t)width - 1) {
                     rowStr.append((width - 1) - rowStr.length(), ' ');
@@ -416,6 +534,7 @@ void RunInteractiveLoop() {
             }
         }
 
+        // Render Summary Line (fixed at the bottom)
         std::string topTalker = "";
         ULONG64 maxTraffic = 0;
         for (const auto& pair : processTraffic) {
@@ -436,6 +555,7 @@ void RunInteractiveLoop() {
         }
         std::cout << summaryStr;
 
+        // Process Key Events
         DWORD waitResult = WaitForSingleObject(hInput, 100);
         if (waitResult == WAIT_OBJECT_0) {
             INPUT_RECORD inputRecords[128];
@@ -447,22 +567,54 @@ void RunInteractiveLoop() {
                         char ascChar = inputRecords[r].Event.KeyEvent.uChar.AsciiChar;
 
                         if (keyCode == VK_ESCAPE || ascChar == 'q' || ascChar == 'Q') {
-                            running = false;
+                            if (currentView == VIEW_DETAIL) {
+                                currentView = VIEW_SUMMARY;
+                                selectedIndex = 0;
+                                for (size_t k = 0; k < summaries.size(); ++k) {
+                                    if (summaries[k].pid == selectedPid) {
+                                        selectedIndex = static_cast<int>(k);
+                                        break;
+                                    }
+                                }
+                                scrollOffset = 0;
+                            } else {
+                                running = false;
+                            }
                             break;
+                        } else if (keyCode == VK_BACK) {
+                            if (currentView == VIEW_DETAIL) {
+                                currentView = VIEW_SUMMARY;
+                                selectedIndex = 0;
+                                for (size_t k = 0; k < summaries.size(); ++k) {
+                                    if (summaries[k].pid == selectedPid) {
+                                        selectedIndex = static_cast<int>(k);
+                                        break;
+                                    }
+                                }
+                                scrollOffset = 0;
+                            }
+                        } else if (keyCode == VK_RETURN) {
+                            if (currentView == VIEW_SUMMARY && totalRows > 0) {
+                                selectedPid = summaries[selectedIndex].pid;
+                                selectedProcName = summaries[selectedIndex].procName;
+                                currentView = VIEW_DETAIL;
+                                selectedIndex = 0;
+                                scrollOffset = 0;
+                            }
                         } else if (keyCode == VK_UP) {
-                            if (scrollOffset > 0) scrollOffset--;
+                            if (selectedIndex > 0) selectedIndex--;
                         } else if (keyCode == VK_DOWN) {
-                            if (scrollOffset < totalRows - viewportHeight) scrollOffset++;
+                            if (selectedIndex < totalRows - 1) selectedIndex++;
                         } else if (keyCode == VK_PRIOR) {
-                            scrollOffset -= viewportHeight;
-                            if (scrollOffset < 0) scrollOffset = 0;
+                            selectedIndex -= viewportHeight;
+                            if (selectedIndex < 0) selectedIndex = 0;
                         } else if (keyCode == VK_NEXT) {
-                            scrollOffset += viewportHeight;
-                            if (scrollOffset > totalRows - viewportHeight) scrollOffset = totalRows - viewportHeight;
+                            selectedIndex += viewportHeight;
+                            if (selectedIndex >= totalRows) selectedIndex = totalRows - 1;
                         } else if (keyCode == VK_HOME) {
-                            scrollOffset = 0;
+                            selectedIndex = 0;
                         } else if (keyCode == VK_END) {
-                            scrollOffset = totalRows - viewportHeight;
+                            selectedIndex = totalRows - 1;
                         }
                     }
                 }
@@ -473,6 +625,7 @@ void RunInteractiveLoop() {
     SetConsoleMode(hInput, prevMode);
     ShowConsoleCursor(true);
 }
+
 
 int main(int argc, char* argv[]) {
     bool staticMode = false;
