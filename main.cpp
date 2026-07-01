@@ -160,8 +160,11 @@ void ShowConsoleCursor(bool showFlag) {
 
 void SetCursorPosition(int x, int y) {
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    COORD coord = { (SHORT)x, (SHORT)y };
-    SetConsoleCursorPosition(hOut, coord);
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (GetConsoleScreenBufferInfo(hOut, &csbi)) {
+        COORD coord = { (SHORT)(csbi.srWindow.Left + x), (SHORT)(csbi.srWindow.Top + y) };
+        SetConsoleCursorPosition(hOut, coord);
+    }
 }
 
 void PauseIfSpawnedConsole() {
@@ -343,7 +346,7 @@ void RunInteractiveLoop() {
     HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
     DWORD prevMode;
     GetConsoleMode(hInput, &prevMode);
-    SetConsoleMode(hInput, prevMode | ENABLE_WINDOW_INPUT | ENABLE_EXTENDED_FLAGS);
+    SetConsoleMode(hInput, (prevMode & ~ENABLE_MOUSE_INPUT & ~ENABLE_WINDOW_INPUT) | ENABLE_PROCESSED_INPUT);
 
     while (running) {
         int width, height;
@@ -373,8 +376,10 @@ void RunInteractiveLoop() {
         char headerBuf[256];
         sprintf(headerBuf, "portview v1.0 | Arrow Keys: Scroll | Page Up/Down | Esc/Q: Quit");
         std::string headerStr(headerBuf);
-        if (headerStr.length() < (size_t)width) {
-            headerStr.append(width - headerStr.length(), ' ');
+        if (headerStr.length() < (size_t)width - 1) {
+            headerStr.append((width - 1) - headerStr.length(), ' ');
+        } else if (headerStr.length() > (size_t)width - 1) {
+            headerStr = headerStr.substr(0, width - 1);
         }
         std::cout << headerStr << "\n";
 
@@ -382,8 +387,10 @@ void RunInteractiveLoop() {
         sprintf(colBuf, "%-6s %-7s %-20s %-13s %-6s %-18s %-11s %-11s",
                 "PROTO", "PORT", "REMOTE", "STATE", "PID", "PROCESS", "SENT", "RECV");
         std::string colStr(colBuf);
-        if (colStr.length() < (size_t)width) {
-            colStr.append(width - colStr.length(), ' ');
+        if (colStr.length() < (size_t)width - 1) {
+            colStr.append((width - 1) - colStr.length(), ' ');
+        } else if (colStr.length() > (size_t)width - 1) {
+            colStr = colStr.substr(0, width - 1);
         }
         std::cout << colStr << "\n";
 
@@ -397,14 +404,14 @@ void RunInteractiveLoop() {
                         row.state.c_str(), row.pid, row.procName.c_str(),
                         row.sentStr.c_str(), row.recvStr.c_str());
                 std::string rowStr(rowBuf);
-                if (rowStr.length() < (size_t)width) {
-                    rowStr.append(width - rowStr.length(), ' ');
-                } else if (rowStr.length() > (size_t)width) {
-                    rowStr = rowStr.substr(0, width);
+                if (rowStr.length() < (size_t)width - 1) {
+                    rowStr.append((width - 1) - rowStr.length(), ' ');
+                } else if (rowStr.length() > (size_t)width - 1) {
+                    rowStr = rowStr.substr(0, width - 1);
                 }
                 std::cout << rowStr << "\n";
             } else {
-                std::string emptyStr(width, ' ');
+                std::string emptyStr(width - 1, ' ');
                 std::cout << emptyStr << "\n";
             }
         }
@@ -422,10 +429,10 @@ void RunInteractiveLoop() {
         if (maxTraffic > 0 && !topTalker.empty()) {
             summaryStr += " | Top talker: " + topTalker + " (" + FormatBytes(maxTraffic) + ")";
         }
-        if (summaryStr.length() < (size_t)width) {
-            summaryStr.append(width - summaryStr.length(), ' ');
-        } else if (summaryStr.length() > (size_t)width) {
-            summaryStr = summaryStr.substr(0, width);
+        if (summaryStr.length() < (size_t)width - 1) {
+            summaryStr.append((width - 1) - summaryStr.length(), ' ');
+        } else if (summaryStr.length() > (size_t)width - 1) {
+            summaryStr = summaryStr.substr(0, width - 1);
         }
         std::cout << summaryStr;
 
