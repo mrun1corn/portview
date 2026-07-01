@@ -1034,6 +1034,10 @@ void RunInteractiveLoop() {
         GetConsoleSize(width, height);
         if (width != lastWidth || height != lastHeight) {
             std::cout << "\x1b[2J\x1b[H" << std::flush;
+            COORD coord;
+            coord.X = static_cast<SHORT>(width);
+            coord.Y = static_cast<SHORT>(height);
+            SetConsoleScreenBufferSize(GetStdHandle(STD_OUTPUT_HANDLE), coord);
             lastWidth = width;
             lastHeight = height;
         }
