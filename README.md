@@ -19,7 +19,7 @@ A Windows CLI tool that lists all open TCP/UDP ports, maps them to their owning 
 ## Example Output
 
 ```
-portview v1.2 — Windows Port & Traffic Reviewer
+portview v1.3 — Windows Port & Traffic Reviewer
 
 TCP Connections (14 active)
 PORT    REMOTE               STATE         PID    PROCESS            SENT        RECV

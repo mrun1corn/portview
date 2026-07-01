@@ -143,6 +143,32 @@ std::string FormatBytes(ULONG64 bytes) {
     return buf;
 }
 
+std::string FormatSpeed(double bytesPerSec) {
+    if (bytesPerSec < 0) return "-";
+    if (bytesPerSec == 0) return "0 B/s";
+    double num = bytesPerSec;
+    const char* units[] = {"B/s", "KB/s", "MB/s", "GB/s", "TB/s"};
+    int unitIndex = 0;
+    while (num >= 1024.0 && unitIndex < 4) {
+        num /= 1024.0;
+        unitIndex++;
+    }
+    char buf[64];
+    if (unitIndex == 0) {
+        sprintf(buf, "%d B/s", static_cast<int>(bytesPerSec));
+    } else {
+        sprintf(buf, "%.1f %s", num, units[unitIndex]);
+    }
+    return buf;
+}
+
+struct PreviousBytes {
+    ULONG64 sentBytes;
+    ULONG64 recvBytes;
+    DWORD timestamp;
+};
+std::unordered_map<std::string, PreviousBytes> g_prevConnectionBytes;
+
 std::string WStringToString(const std::wstring& wstr) {
     if (wstr.empty()) return "";
     int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
@@ -600,7 +626,8 @@ void LoadData(std::vector<ConnectionRow>& connections, std::unordered_map<std::s
     udpCount = 0;
 
     bool elevated = IsElevated();
-
+    DWORD currentTimestamp = GetTickCount();
+    std::unordered_map<std::string, PreviousBytes> newPrevBytes;
     // 1. Fetch TCP
     ULONG size = 0;
     DWORD dwRetVal = GetExtendedTcpTable(NULL, &size, TRUE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
@@ -648,11 +675,36 @@ void LoadData(std::vector<ConnectionRow>& connections, std::unordered_map<std::s
                 ULONG rodSize = sizeof(dataRod);
                 DWORD res = GetPerTcpConnectionEStats(&mibRow, TcpConnectionEstatsData, NULL, 0, 0, NULL, 0, 0, (unsigned char*)&dataRod, 0, rodSize);
                 if (res == NO_ERROR) {
-                    conn.sentStr = FormatBytes(dataRod.DataBytesOut);
-                    conn.recvStr = FormatBytes(dataRod.DataBytesIn);
-                    conn.sentBytesVal = dataRod.DataBytesOut;
-                    conn.recvBytesVal = dataRod.DataBytesIn;
-                    conn.totalBytes = dataRod.DataBytesOut + dataRod.DataBytesIn;
+                    ULONG64 rawSent = dataRod.DataBytesOut;
+                    ULONG64 rawRecv = dataRod.DataBytesIn;
+                    std::string key = conn.proto + ":" + std::to_string(conn.localPort) + "->" + conn.remoteAddr;
+                    
+                    double sentSpeed = 0;
+                    double recvSpeed = 0;
+                    auto it = g_prevConnectionBytes.find(key);
+                    if (it != g_prevConnectionBytes.end()) {
+                        DWORD timeDelta = currentTimestamp - it->second.timestamp;
+                        if (timeDelta > 0) {
+                            if (rawSent >= it->second.sentBytes) {
+                                sentSpeed = (rawSent - it->second.sentBytes) / (timeDelta / 1000.0);
+                            }
+                            if (rawRecv >= it->second.recvBytes) {
+                                recvSpeed = (rawRecv - it->second.recvBytes) / (timeDelta / 1000.0);
+                            }
+                        }
+                    }
+                    
+                    PreviousBytes pb;
+                    pb.sentBytes = rawSent;
+                    pb.recvBytes = rawRecv;
+                    pb.timestamp = currentTimestamp;
+                    newPrevBytes[key] = pb;
+
+                    conn.sentBytesVal = static_cast<ULONG64>(sentSpeed);
+                    conn.recvBytesVal = static_cast<ULONG64>(recvSpeed);
+                    conn.sentStr = FormatSpeed(sentSpeed);
+                    conn.recvStr = FormatSpeed(recvSpeed);
+                    conn.totalBytes = conn.sentBytesVal + conn.recvBytesVal;
                     processTraffic[conn.procName] += conn.totalBytes;
                 }
             }
@@ -702,6 +754,10 @@ void LoadData(std::vector<ConnectionRow>& connections, std::unordered_map<std::s
         }
         return a.localPort < b.localPort;
     });
+
+    if (elevated) {
+        g_prevConnectionBytes = std::move(newPrevBytes);
+    }
 }
 
 
@@ -987,7 +1043,7 @@ void PrintStaticOutput() {
 
     std::cout << "\nSummary: " << tcpCount << " TCP | " << udpCount << " UDP | Allowed FW Ports: " << allowedFwRules;
     if (maxTraffic > 0 && !topTalker.empty()) {
-        std::cout << " | Top talker: " << topTalker << " (" << FormatBytes(maxTraffic) << ")";
+        std::cout << " | Top talker: " << topTalker << " (" << FormatSpeed(static_cast<double>(maxTraffic)) << ")";
     }
     std::cout << "\n";
 }
@@ -1150,9 +1206,9 @@ void RunInteractiveLoop() {
         char headerBuf[256];
         if (currentView == VIEW_SUMMARY) {
             if (IsElevated()) {
-                sprintf(headerBuf, "portview v1.2 [ELEVATED] | Arrows: Nav | Enter: View | A: Add Rule | Esc: Quit");
+                sprintf(headerBuf, "portview v1.3 [ELEVATED] | Arrows: Nav | Enter: View | A: Add Rule | Esc: Quit");
             } else {
-                sprintf(headerBuf, "portview v1.2 [NON-ELEVATED] (Run as Admin for Traffic) | Arrows: Nav | Enter: View | A: Add Rule | Esc: Quit");
+                sprintf(headerBuf, "portview v1.3 [NON-ELEVATED] (Run as Admin for Traffic) | Arrows: Nav | Enter: View | A: Add Rule | Esc: Quit");
             }
         } else {
             std::string pidStr = (selectedPid == 0) ? "IDLE" : "PID " + std::to_string(selectedPid);
@@ -1232,7 +1288,7 @@ void RunInteractiveLoop() {
 
                 summaryStr = "Summary: " + std::to_string(tcpCount) + " TCP | " + std::to_string(udpCount) + " UDP | Allowed FW Ports: " + std::to_string(allowedFwRules);
                 if (maxTraffic > 0 && !topTalker.empty()) {
-                    summaryStr += " | Top talker: " + topTalker + " (" + FormatBytes(maxTraffic) + ")";
+                    summaryStr += " | Top talker: " + topTalker + " (" + FormatSpeed(static_cast<double>(maxTraffic)) + ")";
                 }
             }
         }
@@ -1453,7 +1509,7 @@ int main(int argc, char* argv[]) {
     if (argc > 1) {
         std::string arg = argv[1];
         if (arg == "-h" || arg == "--help") {
-            std::cout << "portview v1.2 — Windows Port & Traffic Reviewer\n\n"
+            std::cout << "portview v1.3 — Windows Port & Traffic Reviewer\n\n"
                       << "Usage: portview.exe [options]\n\n"
                       << "Options:\n"
                       << "  -h, --help     Show this help message\n"
@@ -1462,7 +1518,7 @@ int main(int argc, char* argv[]) {
                       << "Note: Run as administrator to see per-connection traffic stats.\n";
             return 0;
         } else if (arg == "-v" || arg == "--version") {
-            std::cout << "portview v1.2\n";
+            std::cout << "portview v1.3\n";
             return 0;
         } else if (arg == "-s" || arg == "--static") {
             staticMode = true;
