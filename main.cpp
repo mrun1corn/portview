@@ -350,6 +350,92 @@ void BuildProcessSummaries(const std::vector<ConnectionRow>& connections, std::v
     });
 }
 
+bool EnableVirtualTerminalProcessing() {
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hOut == INVALID_HANDLE_VALUE) return false;
+    DWORD dwMode = 0;
+    if (!GetConsoleMode(hOut, &dwMode)) return false;
+    dwMode |= 0x0004; // ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    return SetConsoleMode(hOut, dwMode) != 0;
+}
+
+void PrintSummaryRow(const ProcessSummaryRow& row, bool selected, int width) {
+    char rowBuf[512];
+    std::string connsStr = std::to_string(row.tcpCount) + " TCP";
+    if (row.udpCount > 0) {
+        connsStr += " | " + std::to_string(row.udpCount) + " UDP";
+    }
+
+    if (selected) {
+        sprintf(rowBuf, " > %-6u %-18s %-15s %-11s %-11s",
+                row.pid, row.procName.c_str(), connsStr.c_str(), row.sentStr.c_str(), row.recvStr.c_str());
+        std::string rowStr(rowBuf);
+        if (rowStr.length() < (size_t)width - 1) {
+            rowStr.append((width - 1) - rowStr.length(), ' ');
+        } else if (rowStr.length() > (size_t)width - 1) {
+            rowStr = rowStr.substr(0, width - 1);
+        }
+        std::cout << "\x1b[30;106m" << rowStr << "\x1b[0m\n";
+    } else {
+        std::cout << "   ";
+        printf("\x1b[90m%-6u\x1b[0m ", row.pid);
+        printf("%-18s ", row.procName.substr(0, 18).c_str());
+        printf("\x1b[36m%-15s\x1b[0m ", connsStr.c_str());
+        
+        if (row.sentStr != "-") printf("\x1b[92m%-11s\x1b[0m ", row.sentStr.c_str());
+        else printf("\x1b[90m%-11s\x1b[0m ", "-");
+        
+        if (row.recvStr != "-") printf("\x1b[92m%-11s\x1b[0m", row.recvStr.c_str());
+        else printf("\x1b[90m%-11s\x1b[0m", "-");
+
+        int visualLength = 3 + 7 + 19 + 16 + 12 + 11;
+        if (visualLength < width - 1) {
+            std::cout << std::string((width - 1) - visualLength, ' ');
+        }
+        std::cout << "\n";
+    }
+}
+
+void PrintDetailRow(const ConnectionRow& row, bool selected, int width) {
+    if (selected) {
+        char rowBuf[512];
+        sprintf(rowBuf, " > %-6s %-7u %-20s %-13s %-11s %-11s",
+                row.proto.c_str(), row.localPort, row.remoteAddr.c_str(), row.state.c_str(), row.sentStr.c_str(), row.recvStr.c_str());
+        std::string rowStr(rowBuf);
+        if (rowStr.length() < (size_t)width - 1) {
+            rowStr.append((width - 1) - rowStr.length(), ' ');
+        } else if (rowStr.length() > (size_t)width - 1) {
+            rowStr = rowStr.substr(0, width - 1);
+        }
+        std::cout << "\x1b[30;106m" << rowStr << "\x1b[0m\n";
+    } else {
+        std::cout << "   ";
+        
+        if (row.proto == "TCP") printf("\x1b[36m%-6s\x1b[0m ", "TCP");
+        else printf("\x1b[93m%-6s\x1b[0m ", "UDP");
+
+        printf("%-7u ", row.localPort);
+        printf("\x1b[93m%-20s\x1b[0m ", row.remoteAddr.substr(0, 20).c_str());
+
+        if (row.state == "ESTABLISHED") printf("\x1b[92m%-13s\x1b[0m ", "ESTABLISHED");
+        else if (row.state == "LISTENING") printf("\x1b[36m%-13s\x1b[0m ", "LISTENING");
+        else printf("\x1b[90m%-13s\x1b[0m ", row.state.c_str());
+
+        if (row.sentStr != "-") printf("\x1b[92m%-11s\x1b[0m ", row.sentStr.c_str());
+        else printf("\x1b[90m%-11s\x1b[0m ", "-");
+
+        if (row.recvStr != "-") printf("\x1b[92m%-11s\x1b[0m", row.recvStr.c_str());
+        else printf("\x1b[90m%-11s\x1b[0m", "-");
+
+        int visualLength = 3 + 7 + 8 + 21 + 14 + 12 + 11;
+        if (visualLength < width - 1) {
+            std::cout << std::string((width - 1) - visualLength, ' ');
+        }
+        std::cout << "\n";
+    }
+}
+
+
 void PrintStaticOutput() {
     std::vector<ConnectionRow> connections;
     std::unordered_map<std::string, ULONG64> processTraffic;
@@ -483,7 +569,7 @@ void RunInteractiveLoop() {
         } else if (headerStr.length() > (size_t)width - 1) {
             headerStr = headerStr.substr(0, width - 1);
         }
-        std::cout << headerStr << "\n";
+        std::cout << "\x1b[30;106m" << headerStr << "\x1b[0m\n";
 
         // Render Column Headers
         char colBuf[256];
@@ -500,34 +586,18 @@ void RunInteractiveLoop() {
         } else if (colStr.length() > (size_t)width - 1) {
             colStr = colStr.substr(0, width - 1);
         }
-        std::cout << colStr << "\n";
+        std::cout << "\x1b[36;1m" << colStr << "\x1b[0m\n";
 
         // Render Viewport rows
         for (int i = 0; i < viewportHeight; ++i) {
             int idx = scrollOffset + i;
             if (idx < totalRows) {
-                char prefix = (idx == selectedIndex) ? '>' : ' ';
-                char rowBuf[512];
+                bool isSelected = (idx == selectedIndex);
                 if (currentView == VIEW_SUMMARY) {
-                    const auto& row = summaries[idx];
-                    std::string connsStr = std::to_string(row.tcpCount) + " TCP";
-                    if (row.udpCount > 0) {
-                        connsStr += " | " + std::to_string(row.udpCount) + " UDP";
-                    }
-                    sprintf(rowBuf, "%c  %-6u %-18s %-15s %-11s %-11s",
-                            prefix, row.pid, row.procName.c_str(), connsStr.c_str(), row.sentStr.c_str(), row.recvStr.c_str());
+                    PrintSummaryRow(summaries[idx], isSelected, width);
                 } else {
-                    const auto& row = detailRows[idx];
-                    sprintf(rowBuf, "%c  %-6s %-7u %-20s %-13s %-11s %-11s",
-                            prefix, row.proto.c_str(), row.localPort, row.remoteAddr.c_str(), row.state.c_str(), row.sentStr.c_str(), row.recvStr.c_str());
+                    PrintDetailRow(detailRows[idx], isSelected, width);
                 }
-                std::string rowStr(rowBuf);
-                if (rowStr.length() < (size_t)width - 1) {
-                    rowStr.append((width - 1) - rowStr.length(), ' ');
-                } else if (rowStr.length() > (size_t)width - 1) {
-                    rowStr = rowStr.substr(0, width - 1);
-                }
-                std::cout << rowStr << "\n";
             } else {
                 std::string emptyStr(width - 1, ' ');
                 std::cout << emptyStr << "\n";
@@ -553,7 +623,7 @@ void RunInteractiveLoop() {
         } else if (summaryStr.length() > (size_t)width - 1) {
             summaryStr = summaryStr.substr(0, width - 1);
         }
-        std::cout << summaryStr;
+        std::cout << "\x1b[30;106m" << summaryStr << "\x1b[0m";
 
         // Process Key Events
         DWORD waitResult = WaitForSingleObject(hInput, 100);
@@ -660,6 +730,10 @@ int main(int argc, char* argv[]) {
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
         std::cerr << "Failed to initialize Winsock.\n";
         return 1;
+    }
+
+    if (!staticMode) {
+        EnableVirtualTerminalProcessing();
     }
 
     if (staticMode) {
