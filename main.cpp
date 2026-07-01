@@ -214,8 +214,8 @@ void LoadData(std::vector<ConnectionRow>& connections, std::unordered_map<std::s
             conn.state = TcpStateToString(row.dwState);
             conn.pid = row.dwOwningPid;
             conn.procName = GetProcessName(conn.pid);
-            conn.sentStr = "—";
-            conn.recvStr = "—";
+            conn.sentStr = "-";
+            conn.recvStr = "-";
             conn.totalBytes = 0;
 
             if (elevated) {
@@ -265,11 +265,11 @@ void LoadData(std::vector<ConnectionRow>& connections, std::unordered_map<std::s
             conn.proto = "UDP";
             conn.localPort = ntohs((u_short)row.dwLocalPort);
             conn.remoteAddr = "*:*";
-            conn.state = "—";
+            conn.state = "-";
             conn.pid = row.dwOwningPid;
             conn.procName = GetProcessName(conn.pid);
-            conn.sentStr = "—";
-            conn.recvStr = "—";
+            conn.sentStr = "-";
+            conn.recvStr = "-";
             conn.totalBytes = 0;
 
             connections.push_back(conn);
