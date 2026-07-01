@@ -1047,9 +1047,9 @@ void RunInteractiveLoop() {
         // Render Banner
         char headerBuf[256];
         if (currentView == VIEW_SUMMARY) {
-            sprintf(headerBuf, "portview v1.0 | Up/Down: Select | Enter: View Ports | A: Add Port Rule | Esc/Q: Quit");
+            sprintf(headerBuf, "portview v1.0 | Arrows: Nav | Enter: View | A: Add Rule | Esc: Quit");
         } else {
-            sprintf(headerBuf, "Process: %s (PID %u) | A: Add Port Rule | Backspace/Esc: Back", selectedProcName.c_str(), selectedPid);
+            sprintf(headerBuf, "Process: %s (PID %u) | A: Add Rule | Esc: Back", selectedProcName.c_str(), selectedPid);
         }
         std::string headerStr(headerBuf);
         if (headerStr.length() < (size_t)width - 1) {
