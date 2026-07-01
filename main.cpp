@@ -1150,9 +1150,9 @@ void RunInteractiveLoop() {
         char headerBuf[256];
         if (currentView == VIEW_SUMMARY) {
             if (IsElevated()) {
-                sprintf(headerBuf, "portview v1.1 [ELEVATED] | Arrows: Nav | Enter: View | A: Add Rule | Esc: Quit");
+                sprintf(headerBuf, "portview v1.2 [ELEVATED] | Arrows: Nav | Enter: View | A: Add Rule | Esc: Quit");
             } else {
-                sprintf(headerBuf, "portview v1.1 [NON-ELEVATED] (Run as Admin for Traffic) | Arrows: Nav | Enter: View | A: Add Rule | Esc: Quit");
+                sprintf(headerBuf, "portview v1.2 [NON-ELEVATED] (Run as Admin for Traffic) | Arrows: Nav | Enter: View | A: Add Rule | Esc: Quit");
             }
         } else {
             std::string pidStr = (selectedPid == 0) ? "IDLE" : "PID " + std::to_string(selectedPid);
@@ -1453,7 +1453,7 @@ int main(int argc, char* argv[]) {
     if (argc > 1) {
         std::string arg = argv[1];
         if (arg == "-h" || arg == "--help") {
-            std::cout << "portview v1.1 — Windows Port & Traffic Reviewer\n\n"
+            std::cout << "portview v1.2 — Windows Port & Traffic Reviewer\n\n"
                       << "Usage: portview.exe [options]\n\n"
                       << "Options:\n"
                       << "  -h, --help     Show this help message\n"
@@ -1462,7 +1462,7 @@ int main(int argc, char* argv[]) {
                       << "Note: Run as administrator to see per-connection traffic stats.\n";
             return 0;
         } else if (arg == "-v" || arg == "--version") {
-            std::cout << "portview v1.1\n";
+            std::cout << "portview v1.2\n";
             return 0;
         } else if (arg == "-s" || arg == "--static") {
             staticMode = true;
