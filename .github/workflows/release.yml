@@ -1,0 +1,61 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and Release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history for tags and changelog generation
+
+      - name: Configure CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Generate Changelog
+        shell: bash
+        run: |
+          CURRENT_TAG="${{ github.ref_name }}"
+          echo "Current Tag: $CURRENT_TAG"
+          
+          # Get list of tags sorted by version descending
+          TAGS=$(git tag --sort=-v:refname)
+          
+          # Find the tag immediately following CURRENT_TAG in descending order
+          PREV_TAG=$(echo "$TAGS" | grep -A 1 -x "$CURRENT_TAG" | tail -n 1)
+          
+          if [ "$PREV_TAG" = "$CURRENT_TAG" ] || [ -z "$PREV_TAG" ]; then
+            echo "No previous tag found. Generating changelog from initial commit."
+            COMMITS=$(git log --pretty=format:"- %s (%h)")
+          else
+            echo "Previous Tag: $PREV_TAG"
+            COMMITS=$(git log "$PREV_TAG..$CURRENT_TAG" --pretty=format:"- %s (%h)")
+          fi
+          
+          echo "### Changelog" > changelog.md
+          echo "" >> changelog.md
+          echo "$COMMITS" >> changelog.md
+          
+          echo "Generated Changelog:"
+          cat changelog.md
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: changelog.md
+          files: build/Release/portview.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
