@@ -1024,11 +1024,19 @@ void RunInteractiveLoop() {
     HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
     DWORD prevMode;
     GetConsoleMode(hInput, &prevMode);
-    SetConsoleMode(hInput, (prevMode & ~ENABLE_MOUSE_INPUT & ~ENABLE_WINDOW_INPUT) | ENABLE_PROCESSED_INPUT);
+    SetConsoleMode(hInput, (prevMode & ~ENABLE_MOUSE_INPUT) | ENABLE_PROCESSED_INPUT | ENABLE_WINDOW_INPUT);
+
+    int lastWidth = 0;
+    int lastHeight = 0;
 
     while (running) {
         int width, height;
         GetConsoleSize(width, height);
+        if (width != lastWidth || height != lastHeight) {
+            std::cout << "\x1b[2J\x1b[H" << std::flush;
+            lastWidth = width;
+            lastHeight = height;
+        }
 
         int headerLines = 2; // Banner + Columns
         int footerLines = 1; // Summary
