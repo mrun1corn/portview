@@ -661,6 +661,62 @@ void LoadData(std::vector<ConnectionRow>& connections, std::unordered_map<std::s
 }
 
 
+struct ProcessSummaryRow {
+    std::string procName;
+    int portsCount;
+    int connsCount;
+    ULONG64 sentBytes;
+    ULONG64 recvBytes;
+    std::string sentStr;
+    std::string recvStr;
+};
+
+void BuildProcessSummaries(const std::vector<ConnectionRow>& connections, std::vector<ProcessSummaryRow>& summaries) {
+    summaries.clear();
+    std::unordered_map<std::string, std::vector<size_t>> groups;
+    for (size_t i = 0; i < connections.size(); ++i) {
+        groups[connections[i].procName].push_back(i);
+    }
+
+    for (const auto& pair : groups) {
+        const std::string& name = pair.first;
+        if (name == "-" || name == "Unknown" || name == "System Idle Process") continue;
+
+        ProcessSummaryRow row;
+        row.procName = name;
+        row.sentBytes = 0;
+        row.recvBytes = 0;
+        row.connsCount = 0;
+
+        std::unordered_set<u_short> uniquePorts;
+        for (size_t idx : pair.second) {
+            const auto& conn = connections[idx];
+            uniquePorts.insert(conn.localPort);
+            row.connsCount++;
+            row.sentBytes += conn.sentBytesVal;
+            row.recvBytes += conn.recvBytesVal;
+        }
+
+        row.portsCount = static_cast<int>(uniquePorts.size());
+        row.sentStr = (row.sentBytes > 0) ? FormatBytes(row.sentBytes) : "-";
+        row.recvStr = (row.recvBytes > 0) ? FormatBytes(row.recvBytes) : "-";
+
+        summaries.push_back(row);
+    }
+
+    std::sort(summaries.begin(), summaries.end(), [](const ProcessSummaryRow& a, const ProcessSummaryRow& b) {
+        ULONG64 aTotal = a.sentBytes + a.recvBytes;
+        ULONG64 bTotal = b.sentBytes + b.recvBytes;
+        if (aTotal != bTotal) {
+            return aTotal > bTotal;
+        }
+        if (a.connsCount != b.connsCount) {
+            return a.connsCount > b.connsCount;
+        }
+        return a.procName < b.procName;
+    });
+}
+
 void BuildFirewallRuleRows(const std::vector<ConnectionRow>& connections, std::vector<FirewallRuleRow>& rules) {
     {
         std::lock_guard<std::mutex> lock(g_fwMutex);
@@ -716,16 +772,11 @@ bool EnableVirtualTerminalProcessing() {
     return SetConsoleMode(hOut, dwMode) != 0;
 }
 
-void PrintSummaryRow(const FirewallRuleRow& row, bool selected, int width) {
+void PrintSummaryRow(const ProcessSummaryRow& row, bool selected, int width) {
     char rowBuf[512];
-    std::string statusStr = row.enabled ? "ENABLED" : "DISABLED";
-    std::string portStr = (row.port == 0) ? "*" : std::to_string(row.port);
-
     if (selected) {
-        sprintf(rowBuf, " > %-7s %-6s %-9s %-30s %-18s %-12s %-11s %-11s",
-                portStr.c_str(), row.proto.c_str(), statusStr.c_str(),
-                row.ruleNameStr.c_str(), row.procName.c_str(), row.state.c_str(),
-                row.sentStr.c_str(), row.recvStr.c_str());
+        sprintf(rowBuf, " > %-25s %-7d %-7d %-12s %-12s",
+                row.procName.c_str(), row.portsCount, row.connsCount, row.sentStr.c_str(), row.recvStr.c_str());
         std::string rowStr(rowBuf);
         if (rowStr.length() < (size_t)width - 1) {
             rowStr.append((width - 1) - rowStr.length(), ' ');
@@ -735,28 +786,17 @@ void PrintSummaryRow(const FirewallRuleRow& row, bool selected, int width) {
         std::cout << "\x1b[30;106m" << rowStr << "\x1b[0m\n";
     } else {
         std::cout << "   ";
-        printf("%-7s ", portStr.c_str());
-        if (row.proto == "TCP") printf("\x1b[36m%-6s\x1b[0m ", "TCP");
-        else printf("\x1b[93m%-6s\x1b[0m ", "UDP");
+        printf("\x1b[36;1m%-25s\x1b[0m ", row.procName.substr(0, 25).c_str());
+        printf("%-7d ", row.portsCount);
+        printf("%-7d ", row.connsCount);
         
-        if (row.enabled) printf("\x1b[92m%-9s\x1b[0m ", "ENABLED");
-        else printf("\x1b[90m%-9s\x1b[0m ", "DISABLED");
+        if (row.sentStr != "-") printf("\x1b[92m%-12s\x1b[0m ", row.sentStr.c_str());
+        else printf("\x1b[90m%-12s\x1b[0m ", "-");
         
-        printf("%-30s ", row.ruleNameStr.substr(0, 30).c_str());
-        printf("%-18s ", row.procName.substr(0, 18).c_str());
-        
-        if (row.state == "ESTABLISHED") printf("\x1b[92m%-12s\x1b[0m ", "ESTABLISHED");
-        else if (row.state == "LISTENING") printf("\x1b[36m%-12s\x1b[0m ", "LISTENING");
-        else if (row.state == "IDLE") printf("\x1b[90m%-12s\x1b[0m ", "IDLE");
-        else printf("%-12s ", row.state.c_str());
-        
-        if (row.sentStr != "-") printf("\x1b[92m%-11s\x1b[0m ", row.sentStr.c_str());
-        else printf("\x1b[90m%-11s\x1b[0m ", "-");
-        
-        if (row.recvStr != "-") printf("\x1b[92m%-11s\x1b[0m", row.recvStr.c_str());
-        else printf("\x1b[90m%-11s\x1b[0m", "-");
+        if (row.recvStr != "-") printf("\x1b[92m%-12s\x1b[0m", row.recvStr.c_str());
+        else printf("\x1b[90m%-12s\x1b[0m", "-");
 
-        int visualLength = 3 + 8 + 7 + 10 + 31 + 19 + 13 + 12 + 11;
+        int visualLength = 3 + 26 + 8 + 8 + 13 + 12;
         if (visualLength < width - 1) {
             std::cout << std::string((width - 1) - visualLength, ' ');
         }
@@ -822,17 +862,14 @@ void PrintStaticOutput() {
 
     LoadData(connections, processTraffic, tcpCount, udpCount);
 
-    std::vector<FirewallRuleRow> summaries;
-    BuildFirewallRuleRows(connections, summaries);
+    std::vector<ProcessSummaryRow> summaries;
+    BuildProcessSummaries(connections, summaries);
 
-    std::cout << "Allowed Inbound Firewall Ports (" << summaries.size() << " rules)\n";
-    std::cout << "PORT    PROTO  STATUS    RULE NAME                      PROCESS            STATE       SENT        RECV\n";
+    std::cout << "Process Summary (" << summaries.size() << " active processes)\n";
+    std::cout << "PROCESS                   PORTS   CONNS   SENT         RECV\n";
     for (const auto& row : summaries) {
-        std::string statusStr = row.enabled ? "ENABLED" : "DISABLED";
-        std::string portStr = (row.port == 0) ? "*" : std::to_string(row.port);
-        printf("%-7s %-6s %-9s %-30s %-18s %-12s %-11s %-11s\n",
-               portStr.c_str(), row.proto.c_str(), statusStr.c_str(),
-               row.ruleNameStr.substr(0, 30).c_str(), row.procName.substr(0, 18).c_str(), row.state.c_str(),
+        printf("%-25s %-7d %-7d %-12s %-12s\n",
+               row.procName.substr(0, 25).c_str(), row.portsCount, row.connsCount,
                row.sentStr.c_str(), row.recvStr.c_str());
     }
 
@@ -886,8 +923,8 @@ void RunInteractiveLoop() {
     DWORD udpCount = 0;
 
     LoadData(connections, processTraffic, tcpCount, udpCount);
-    std::vector<FirewallRuleRow> summaries;
-    BuildFirewallRuleRows(connections, summaries);
+    std::vector<ProcessSummaryRow> summaries;
+    BuildProcessSummaries(connections, summaries);
     lastRefreshTime = GetTickCount();
     std::thread(UpdateFirewallCache).detach();
 
@@ -910,7 +947,7 @@ void RunInteractiveLoop() {
         DWORD currentTime = GetTickCount();
         if (currentTime - lastRefreshTime >= refreshIntervalMs) {
             LoadData(connections, processTraffic, tcpCount, udpCount);
-            BuildFirewallRuleRows(connections, summaries);
+            BuildProcessSummaries(connections, summaries);
             lastRefreshTime = currentTime;
         }
 
@@ -923,11 +960,62 @@ void RunInteractiveLoop() {
         // Build filtered view-specific records
         std::vector<ConnectionRow> detailRows;
         if (currentView == VIEW_DETAIL) {
+            std::unordered_set<std::string> portProtoSeen;
             for (const auto& conn : connections) {
-                if ((selectedPort == 0 || conn.localPort == selectedPort) && conn.proto == selectedProto) {
+                if (conn.procName == selectedProcName) {
                     detailRows.push_back(conn);
+                    portProtoSeen.insert(std::to_string(conn.localPort) + ":" + conn.proto);
                 }
             }
+
+            // Include idle firewall rules that apply to this process
+            std::string procBase = selectedProcName;
+            size_t dot = procBase.find_last_of('.');
+            if (dot != std::string::npos) {
+                procBase = procBase.substr(0, dot);
+            }
+            std::transform(procBase.begin(), procBase.end(), procBase.begin(), ::tolower);
+
+            std::vector<FirewallRuleRow> matchedRules;
+            {
+                std::lock_guard<std::mutex> lock(g_fwMutex);
+                for (const auto& rule : g_fwRulesList) {
+                    std::string ruleNameLower = rule.ruleNameStr;
+                    std::transform(ruleNameLower.begin(), ruleNameLower.end(), ruleNameLower.begin(), ::tolower);
+                    if (ruleNameLower.find(procBase) != std::string::npos) {
+                        matchedRules.push_back(rule);
+                    }
+                }
+            }
+
+            for (const auto& rule : matchedRules) {
+                std::string key = std::to_string(rule.port) + ":" + rule.proto;
+                if (portProtoSeen.find(key) == portProtoSeen.end()) {
+                    ConnectionRow conn;
+                    conn.proto = rule.proto;
+                    conn.localPort = rule.port;
+                    conn.remoteAddr = "*:*";
+                    conn.state = "IDLE";
+                    conn.pid = 0;
+                    conn.procName = selectedProcName;
+                    conn.sentStr = "-";
+                    conn.recvStr = "-";
+                    conn.sentBytesVal = 0;
+                    conn.recvBytesVal = 0;
+                    conn.totalBytes = 0;
+                    conn.fwStatus = rule.enabled ? (rule.allowed ? FW_STATUS_ALLOWED : FW_STATUS_BLOCKED) : FW_STATUS_NONE;
+
+                    detailRows.push_back(conn);
+                    portProtoSeen.insert(key);
+                }
+            }
+
+            std::sort(detailRows.begin(), detailRows.end(), [](const ConnectionRow& a, const ConnectionRow& b) {
+                if (a.state != b.state) {
+                    return a.state != "IDLE";
+                }
+                return a.localPort < b.localPort;
+            });
         }
 
         int totalRows = (currentView == VIEW_SUMMARY) ? static_cast<int>(summaries.size()) : static_cast<int>(detailRows.size());
@@ -1104,7 +1192,7 @@ void RunInteractiveLoop() {
                                     currentView = VIEW_SUMMARY;
                                     selectedIndex = 0;
                                     for (size_t k = 0; k < summaries.size(); ++k) {
-                                        if (summaries[k].ruleName == selectedRuleName && summaries[k].port == selectedPort && summaries[k].proto == selectedProto) {
+                                        if (summaries[k].procName == selectedProcName) {
                                             selectedIndex = static_cast<int>(k);
                                             break;
                                         }
@@ -1117,7 +1205,7 @@ void RunInteractiveLoop() {
                                     currentView = VIEW_SUMMARY;
                                     selectedIndex = 0;
                                     for (size_t k = 0; k < summaries.size(); ++k) {
-                                        if (summaries[k].ruleName == selectedRuleName && summaries[k].port == selectedPort && summaries[k].proto == selectedProto) {
+                                        if (summaries[k].procName == selectedProcName) {
                                             selectedIndex = static_cast<int>(k);
                                             break;
                                         }
@@ -1126,37 +1214,63 @@ void RunInteractiveLoop() {
                                 }
                             } else if (keyCode == VK_RETURN) {
                                 if (currentView == VIEW_SUMMARY && totalRows > 0) {
-                                    selectedPid = summaries[selectedIndex].pid;
                                     selectedProcName = summaries[selectedIndex].procName;
-                                    selectedPort = summaries[selectedIndex].port;
-                                    selectedProto = summaries[selectedIndex].proto;
-                                    selectedRuleName = summaries[selectedIndex].ruleName;
                                     currentView = VIEW_DETAIL;
                                     selectedIndex = 0;
                                     scrollOffset = 0;
                                 }
                             } else if (ascChar == 's' || ascChar == 'S') {
-                                if (currentView == VIEW_SUMMARY && totalRows > 0) {
-                                    const auto& rule = summaries[selectedIndex];
-                                    bool success = ToggleFirewallRule(rule.ruleName, !rule.enabled);
+                                if (currentView == VIEW_DETAIL && totalRows > 0) {
+                                    const auto& detailRow = detailRows[selectedIndex];
+                                    std::wstring ruleName = L"";
+                                    bool isEnabled = false;
+                                    {
+                                        std::lock_guard<std::mutex> lock(g_fwMutex);
+                                        for (const auto& r : g_fwRulesList) {
+                                            if (r.port == detailRow.localPort && r.proto == detailRow.proto) {
+                                                ruleName = r.ruleName;
+                                                isEnabled = r.enabled;
+                                                break;
+                                            }
+                                        }
+                                    }
                                     statusMessageTimer = GetTickCount();
-                                    if (success) {
-                                        statusMessage = "Firewall rule status toggled successfully!";
-                                        std::thread(UpdateFirewallCache).detach();
+                                    if (!ruleName.empty()) {
+                                        bool success = ToggleFirewallRule(ruleName, !isEnabled);
+                                        if (success) {
+                                            statusMessage = "Firewall rule status toggled successfully!";
+                                            std::thread(UpdateFirewallCache).detach();
+                                        } else {
+                                            statusMessage = "Error: Failed to toggle firewall rule. Ensure running elevated.";
+                                        }
                                     } else {
-                                        statusMessage = "Error: Failed to toggle firewall rule. Ensure running elevated.";
+                                        statusMessage = "No custom firewall rule found for this port.";
                                     }
                                 }
                             } else if (ascChar == 'd' || ascChar == 'D' || keyCode == VK_DELETE) {
-                                if (currentView == VIEW_SUMMARY && totalRows > 0) {
-                                    const auto& rule = summaries[selectedIndex];
-                                    bool success = DeleteFirewallRule(rule.ruleName);
+                                if (currentView == VIEW_DETAIL && totalRows > 0) {
+                                    const auto& detailRow = detailRows[selectedIndex];
+                                    std::wstring ruleName = L"";
+                                    {
+                                        std::lock_guard<std::mutex> lock(g_fwMutex);
+                                        for (const auto& r : g_fwRulesList) {
+                                            if (r.port == detailRow.localPort && r.proto == detailRow.proto) {
+                                                ruleName = r.ruleName;
+                                                break;
+                                            }
+                                        }
+                                    }
                                     statusMessageTimer = GetTickCount();
-                                    if (success) {
-                                        statusMessage = "Firewall rule deleted successfully!";
-                                        std::thread(UpdateFirewallCache).detach();
+                                    if (!ruleName.empty()) {
+                                        bool success = DeleteFirewallRule(ruleName);
+                                        if (success) {
+                                            statusMessage = "Firewall rule deleted successfully!";
+                                            std::thread(UpdateFirewallCache).detach();
+                                        } else {
+                                            statusMessage = "Error: Failed to delete firewall rule. Ensure running elevated.";
+                                        }
                                     } else {
-                                        statusMessage = "Error: Failed to delete firewall rule. Ensure running elevated.";
+                                        statusMessage = "No custom firewall rule found for this port.";
                                     }
                                 }
                             } else if (keyCode == VK_UP) {
@@ -1175,6 +1289,7 @@ void RunInteractiveLoop() {
                                 selectedIndex = totalRows - 1;
                             }
                         }
+
                     }
                 }
             }
