@@ -1,0 +1,9 @@
+build/
+.vs/
+out/
+CMakeSettings.json
+*.user
+*.suo
+*.sln
+*.vcxproj
+*.filters
