@@ -716,6 +716,8 @@ void PrintDetailRow(const ConnectionRow& row, bool selected, int width) {
 
 
 void PrintStaticOutput() {
+    UpdateFirewallCache();
+
     std::vector<ConnectionRow> connections;
     std::unordered_map<std::string, ULONG64> processTraffic;
     DWORD tcpCount = 0;
@@ -750,7 +752,17 @@ void PrintStaticOutput() {
         }
     }
 
-    std::cout << "\nSummary: " << tcpCount << " TCP | " << udpCount << " UDP";
+    int allowedFwRules = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_fwMutex);
+        for (const auto& pair : g_fwCache) {
+            if (pair.second == FW_STATUS_ALLOWED) {
+                allowedFwRules++;
+            }
+        }
+    }
+
+    std::cout << "\nSummary: " << tcpCount << " TCP | " << udpCount << " UDP | Allowed FW Ports: " << allowedFwRules;
     if (maxTraffic > 0 && !topTalker.empty()) {
         std::cout << " | Top talker: " << topTalker << " (" << FormatBytes(maxTraffic) << ")";
     }
@@ -911,7 +923,17 @@ void RunInteractiveLoop() {
                     }
                 }
 
-                summaryStr = "Summary: " + std::to_string(tcpCount) + " TCP | " + std::to_string(udpCount) + " UDP";
+                int allowedFwRules = 0;
+                {
+                    std::lock_guard<std::mutex> lock(g_fwMutex);
+                    for (const auto& pair : g_fwCache) {
+                        if (pair.second == FW_STATUS_ALLOWED) {
+                            allowedFwRules++;
+                        }
+                    }
+                }
+
+                summaryStr = "Summary: " + std::to_string(tcpCount) + " TCP | " + std::to_string(udpCount) + " UDP | Allowed FW Ports: " + std::to_string(allowedFwRules);
                 if (maxTraffic > 0 && !topTalker.empty()) {
                     summaryStr += " | Top talker: " + topTalker + " (" + FormatBytes(maxTraffic) + ")";
                 }
