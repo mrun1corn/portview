@@ -15,6 +15,9 @@
 #include <string>
 #include <algorithm>
 #include <unordered_map>
+#include <thread>
+#include <mutex>
+#include <unordered_set>
 #include <io.h>
 
 // Link with iphlpapi.lib and ws2_32.lib
@@ -48,6 +51,63 @@ std::string IpToString(DWORD ipAddress) {
         return ipStr;
     }
     return "0.0.0.0";
+}
+
+std::mutex g_dnsMutex;
+std::unordered_map<DWORD, std::string> g_dnsCache;
+std::unordered_set<DWORD> g_resolvingQueue;
+
+std::string ResolveIpToHostname(DWORD ipAddress) {
+    if (ipAddress == 0) {
+        return "*";
+    }
+
+    // Localhost optimization to avoid querying DNS
+    if (ipAddress == 0x0100007f) {
+        return "localhost";
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_dnsMutex);
+        auto it = g_dnsCache.find(ipAddress);
+        if (it != g_dnsCache.end()) {
+            return it->second;
+        }
+
+        // Kick off asynchronous resolution if not already in flight
+        if (g_resolvingQueue.find(ipAddress) == g_resolvingQueue.end()) {
+            g_resolvingQueue.insert(ipAddress);
+            
+            std::string fallbackIp = IpToString(ipAddress);
+            std::thread([ipAddress, fallbackIp]() {
+                sockaddr_in sa;
+                sa.sin_family = AF_INET;
+                sa.sin_addr.s_addr = ipAddress;
+                sa.sin_port = 0;
+
+                char host[NI_MAXHOST];
+                int result = getnameinfo((sockaddr*)&sa, sizeof(sa), host, sizeof(host), NULL, 0, NI_NOFQDN);
+                std::string hostname = (result == 0) ? host : fallbackIp;
+
+                {
+                    std::lock_guard<std::mutex> lock(g_dnsMutex);
+                    g_dnsCache[ipAddress] = hostname;
+                    g_resolvingQueue.erase(ipAddress);
+                }
+            }).detach();
+        }
+    }
+
+    return IpToString(ipAddress);
+}
+
+std::string GetRemoteAddrString(DWORD ipAddress, DWORD port) {
+    if (ipAddress == 0 && port == 0) {
+        return "0.0.0.0:*";
+    }
+    u_short rPort = ntohs((u_short)port);
+    std::string host = ResolveIpToHostname(ipAddress);
+    return host + ":" + std::to_string(rPort);
 }
 
 bool IsElevated() {
@@ -207,12 +267,7 @@ void LoadData(std::vector<ConnectionRow>& connections, std::unordered_map<std::s
             conn.proto = "TCP";
             conn.localPort = ntohs((u_short)row.dwLocalPort);
             
-            std::string remoteIp = IpToString(row.dwRemoteAddr);
-            u_short remotePort = ntohs((u_short)row.dwRemotePort);
-            conn.remoteAddr = remoteIp + ":" + std::to_string(remotePort);
-            if (row.dwRemoteAddr == 0 && remotePort == 0) {
-                conn.remoteAddr = "0.0.0.0:*";
-            }
+            conn.remoteAddr = GetRemoteAddrString(row.dwRemoteAddr, row.dwRemotePort);
             conn.state = TcpStateToString(row.dwState);
             conn.pid = row.dwOwningPid;
             conn.procName = GetProcessName(conn.pid);
