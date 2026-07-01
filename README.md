@@ -56,16 +56,25 @@ The output binary is `build/Release/portview.exe`.
 ## Usage
 
 ```bash
-# Basic — shows ports + process info
+# Basic — launches interactive UI with real-time refresh and scroll
 portview.exe
+
+# Static snapshot — outputs a single table capture (non-interactive)
+portview.exe --static
 
 # With traffic stats — run as administrator
 # Right-click terminal → "Run as administrator"
 portview.exe
 ```
 
-> **Note:** Traffic statistics (bytes sent/received) require administrator privileges. Without elevation, the tool still shows all ports, states, and process names — just no byte counters.
+### Interactive Controls
 
+- **Arrow Up/Down**: Scroll the list line-by-line
+- **Page Up/Down**: Scroll the list page-by-page
+- **Home/End**: Jump to the top/bottom of the list
+- **Esc/Q**: Exit the application
+
+> **Note:** Traffic statistics (bytes sent/received) require administrator privileges. Without elevation, the tool still shows all ports, states, and process names but with byte counters empty (`—`).
 ## How It Works
 
 1. Calls `GetExtendedTcpTable` / `GetExtendedUdpTable` to enumerate all connections
