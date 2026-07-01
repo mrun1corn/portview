@@ -1047,9 +1047,17 @@ void RunInteractiveLoop() {
         // Render Banner
         char headerBuf[256];
         if (currentView == VIEW_SUMMARY) {
-            sprintf(headerBuf, "portview v1.0 | Arrows: Nav | Enter: View | A: Add Rule | Esc: Quit");
+            if (IsElevated()) {
+                sprintf(headerBuf, "portview v1.0 [ELEVATED] | Arrows: Nav | Enter: View | A: Add Rule | Esc: Quit");
+            } else {
+                sprintf(headerBuf, "portview v1.0 [NON-ELEVATED] (Run as Admin for Traffic) | Arrows: Nav | Enter: View | A: Add Rule | Esc: Quit");
+            }
         } else {
-            sprintf(headerBuf, "Process: %s (PID %u) | A: Add Rule | Esc: Back", selectedProcName.c_str(), selectedPid);
+            if (IsElevated()) {
+                sprintf(headerBuf, "Process: %s (PID %u) [ELEVATED] | A: Add Rule | Esc: Back", selectedProcName.c_str(), selectedPid);
+            } else {
+                sprintf(headerBuf, "Process: %s (PID %u) [NON-ELEVATED] | A: Add Rule | Esc: Back", selectedProcName.c_str(), selectedPid);
+            }
         }
         std::string headerStr(headerBuf);
         if (headerStr.length() < (size_t)width - 1) {
