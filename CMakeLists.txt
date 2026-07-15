@@ -4,7 +4,17 @@ project(portview LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_executable(portview main.cpp resource.rc)
+add_executable(portview 
+    src/main.cpp 
+    src/firewall.cpp 
+    src/utils.cpp 
+    src/process_resolver.cpp 
+    src/ui_renderer.cpp 
+    src/network_tables.cpp 
+    resource.rc
+)
+
+target_include_directories(portview PRIVATE include)
 
 # Link Windows network, IP Helper, and COM/OLE APIs
 target_link_libraries(portview PRIVATE iphlpapi ws2_32 ole32 oleaut32)

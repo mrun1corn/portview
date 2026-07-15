@@ -9,18 +9,21 @@
 - Show all active TCP connections and UDP listeners
 - Map each port to its owning process (PID + name)
 - Display per-connection traffic stats (bytes in/out) when running elevated
-- Clean, human-readable tabular output
-- Single `main.cpp`, no third-party libraries
+- Clean, human-readable tabular output (interactive TUI)
+- Modular architecture, zero third-party dependencies (Windows API only)
+- Real-time continuous monitoring (speed and traffic)
+- Firewall rule management integration
 
 ## Architecture
 
 ```
-portview.exe (~400 LOC)
-├── TCP table    → GetExtendedTcpTable()
-├── UDP table    → GetExtendedUdpTable()
-├── Traffic      → SetPerTcpConnectionEStats() + GetPerTcpConnectionEStats()
-├── PID → Name   → OpenProcess() + QueryFullProcessImageNameW()
-└── Output       → formatted table to stdout
+portview.exe
+├── network_tables.cpp  → GetExtendedTcpTable(), GetExtendedUdpTable()
+├── traffic_stats.cpp   → SetPerTcpConnectionEStats(), GetPerTcpConnectionEStats()
+├── process_resolver.cpp→ OpenProcess(), QueryFullProcessImageNameW()
+├── firewall_manager.cpp→ INetFwPolicy2 / COM APIs
+├── ui_renderer.cpp     → Windows Console ANSI escape sequences
+└── main.cpp            → Application entry point & coordination
 ```
 
 ## Windows APIs
@@ -67,21 +70,33 @@ Summary: 14 TCP | 6 UDP | Top talker: chrome.exe (168.6 KB)
 
 ## Build System
 
-- **CMake 3.15+** with MSVC or MinGW
-- Links: `iphlpapi.lib`, `ws2_32.lib`
 - Standard: C++17
-- Single translation unit: `main.cpp`
 
 ## Project Structure
 
 ```
 portview/
 ├── CMakeLists.txt
-├── main.cpp
 ├── README.md
 ├── PLAN.md
 ├── TODO.md
-└── LICENSE
+├── LICENSE
+├── portview.ico
+├── resource.rc
+├── include/
+│   ├── data_models.h
+│   ├── firewall.h
+│   ├── network_tables.h
+│   ├── process_resolver.h
+│   ├── ui_renderer.h
+│   └── utils.h
+└── src/
+    ├── firewall.cpp
+    ├── main.cpp
+    ├── network_tables.cpp
+    ├── process_resolver.cpp
+    ├── ui_renderer.cpp
+    └── utils.cpp
 ```
 
 ## Scope
@@ -90,8 +105,10 @@ portview/
 
 - List all TCP connections with state (LISTENING, ESTABLISHED, TIME_WAIT, etc.)
 - List all UDP listeners
-- Per-TCP-connection bytes sent/received (elevated only)
+- Per-TCP-connection bytes sent/received and speed (elevated only)
 - Process name + PID resolution
+- Interactive Text UI (TUI) with real-time updates and arrow-key navigation
+- Firewall rule management (view and toggle rules for selected ports/processes)
 - Human-readable byte formatting (B, KB, MB, GB)
 - Summary line with top talker
 - Graceful degradation without elevation (ports + process, no traffic stats)
@@ -99,19 +116,14 @@ portview/
 ### Out of Scope
 
 - Packet capture / deep packet inspection
-- GUI
-- Historical logging / database
-- Firewall rule management
 - Cross-platform support
 - Service / daemon mode
-- Real-time continuous monitoring (v1)
 
 ## Constraints
 
 - `SetPerTcpConnectionEStats` / `GetPerTcpConnectionEStats` require **administrator/elevated** privileges
-- Without elevation: tool shows ports, state, PID, process name — just no byte counters
-- Traffic stats are cumulative per-connection lifetime, not per-second rates
-- UDP has no connection stats (stateless protocol) — only port + PID shown
+- Firewall COM APIs also require elevation.
+- Without elevation: tool shows ports, state, PID, process name — just no byte counters or firewall toggles.
 
 ## Milestones
 
