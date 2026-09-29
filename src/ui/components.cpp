@@ -11,7 +11,7 @@ std::string FormatBanner(int width, bool isSummary, const std::string& procName,
     std::string elevStr = isElevated ? "[ELEVATED]" : "[NON-ELEVATED]";
 
     if (isSummary) {
-        std::snprintf(headerBuf, sizeof(headerBuf), "portview v1.4 %s | %s | %s | F3: Sort | F2: Add Rule | Del: Kill | Esc: Quit",
+        std::snprintf(headerBuf, sizeof(headerBuf), "portview v1.5 %s | %s | %s | F3: Sort | F2: Add Rule | Del: Kill | Esc: Quit",
                       elevStr.c_str(), hostMetrics.cpuBannerStr.c_str(), hostMetrics.ramBannerStr.c_str());
     } else {
         std::string pidStr = (pid == 0) ? "IDLE" : "PID " + std::to_string(pid);
