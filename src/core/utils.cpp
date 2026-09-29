@@ -1,10 +1,10 @@
-#include "utils.h"
+#include "core/utils.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
-#include <tcpestats.h>
 #include <cstdio>
 #include <iostream>
+#include <algorithm>
 
 ScopedWinsock::ScopedWinsock() {
     WSADATA wsaData;
@@ -36,6 +36,14 @@ void ProcessSummaryRow::finalize(int uniquePortsCount) {
     portsCount = uniquePortsCount;
     sentStr = (sentBytes > 0) ? FormatBytes(sentBytes) : "-";
     recvStr = (recvBytes > 0) ? FormatBytes(recvBytes) : "-";
+    ramStr = (ramBytes > 0) ? FormatBytes(ramBytes) : "-";
+    if (cpuPercent > 0.0) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%.1f%%", cpuPercent);
+        cpuStr = buf;
+    } else {
+        cpuStr = "0.0%";
+    }
 }
 
 std::string TcpStateToString(DWORD state) {
@@ -111,6 +119,16 @@ std::string WStringToString(const std::wstring& wstr) {
     return strTo;
 }
 
+std::string PadOrTrim(std::string str, int targetWidth) {
+    if (targetWidth <= 0) return "";
+    size_t width = static_cast<size_t>(targetWidth);
+    if (str.length() < width) {
+        str.append(width - str.length(), ' ');
+    } else if (str.length() > width) {
+        str = str.substr(0, width);
+    }
+    return str;
+}
 
 bool IsElevated() {
     bool elevated = false;
@@ -124,4 +142,23 @@ bool IsElevated() {
         CloseHandle(hToken);
     }
     return elevated;
+}
+
+bool CopyToClipboard(const std::string& text) {
+    if (text.empty()) return false;
+    if (!OpenClipboard(NULL)) return false;
+    EmptyClipboard();
+    HGLOBAL hGlob = GlobalAlloc(GMEM_MOVEABLE, text.size() + 1);
+    if (!hGlob) {
+        CloseClipboard();
+        return false;
+    }
+    char* pBuf = static_cast<char*>(GlobalLock(hGlob));
+    if (pBuf) {
+        std::memcpy(pBuf, text.c_str(), text.size() + 1);
+        GlobalUnlock(hGlob);
+        SetClipboardData(CF_TEXT, hGlob);
+    }
+    CloseClipboard();
+    return true;
 }

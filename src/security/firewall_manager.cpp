@@ -1,5 +1,5 @@
-#include "firewall.h"
-#include "utils.h"
+#include "security/firewall_manager.h"
+#include "core/utils.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <iostream>

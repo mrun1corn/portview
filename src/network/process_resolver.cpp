@@ -3,8 +3,8 @@
 #endif
 
 #include <winsock2.h>
-#include "process_resolver.h"
-#include "utils.h"
+#include "network/process_resolver.h"
+#include "core/utils.h"
 #include <psapi.h>
 #include <mutex>
 #include <unordered_map>
@@ -70,21 +70,21 @@ std::wstring ProcessResolver::GetProcessImagePath(DWORD pid) {
         }
     }
 
-    std::wstring pathStr = L"";
+    std::wstring appPath = L"";
     HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (hProcess != NULL) {
         wchar_t path[MAX_PATH];
         DWORD size = MAX_PATH;
         if (QueryFullProcessImageNameW(hProcess, 0, path, &size)) {
-            pathStr = path;
+            appPath = path;
         }
         CloseHandle(hProcess);
     }
 
     {
         std::lock_guard<std::mutex> lock(g_procCacheMutex);
-        g_procPathCache[pid] = pathStr;
+        g_procPathCache[pid] = appPath;
     }
 
-    return pathStr;
+    return appPath;
 }
