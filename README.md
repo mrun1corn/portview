@@ -16,13 +16,15 @@
 
 ## Quick Install
 
-Download and run the latest standalone executable with a single PowerShell command:
+Open **PowerShell** or **Command Prompt** as **Administrator** (Right-click $\rightarrow$ *Run as administrator*) and run:
 
 ```powershell
+# Run in an elevated terminal (PowerShell as Administrator)
 Invoke-WebRequest -Uri "https://github.com/mrun1corn/portview/releases/latest/download/portview.exe" -OutFile "portview.exe"; .\portview.exe
 ```
 
-> **ProTip:** Run your terminal as **Administrator** to enable per-connection bandwidth telemetry (`SENT` / `RECV`) and Windows Firewall rule creation. Without administrator rights, PortView functions gracefully for all port enumeration, live searching, and process inspection.
+> [!IMPORTANT]
+> **Run as Administrator:** Running your terminal as Administrator allows PortView to collect live per-socket bandwidth telemetry (`SENT` / `RECV`), resolve elevated system process paths, and create/toggle Windows Firewall rules. Without elevation, PortView still works seamlessly for port mapping, live search, and process inspection.
 
 ---
 
