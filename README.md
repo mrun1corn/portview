@@ -9,6 +9,7 @@
 [![Dependencies](https://img.shields.io/badge/Dependencies-None-brightgreen?style=flat-square)](https://github.com/mrun1corn/portview)
 [![Latest Release](https://img.shields.io/github/v/release/mrun1corn/portview?style=flat-square&logo=github)](https://github.com/mrun1corn/portview/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/mrun1corn/portview/total?style=flat-square&logo=github)](https://github.com/mrun1corn/portview/releases)
+[![Views](https://komarev.com/ghpvc/?username=mrun1corn&label=Views&color=0e75c4&style=flat-square&logo=github)](https://github.com/mrun1corn/portview)
 [![Build & Release](https://img.shields.io/github/actions/workflow/status/mrun1corn/portview/release.yml?style=flat-square&logo=githubactions&label=release)](https://github.com/mrun1corn/portview/actions/workflows/release.yml)
 [![CI Tests](https://img.shields.io/github/actions/workflow/status/mrun1corn/portview/ci.yml?style=flat-square&logo=githubactions&label=tests)](https://github.com/mrun1corn/portview/actions/workflows/ci.yml)
 
