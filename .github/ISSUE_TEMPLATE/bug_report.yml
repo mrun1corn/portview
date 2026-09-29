@@ -1,0 +1,72 @@
+name: 🐛 Bug Report
+description: Report a bug, crash, or unexpected behavior in PortView
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve PortView! Please provide details to help reproduce and resolve the issue.
+
+  - type: input
+    id: version
+    attributes:
+      label: PortView Version
+      description: Run `portview.exe --version` to get the version string.
+      placeholder: "e.g., v1.5"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os_version
+    attributes:
+      label: Windows OS Version
+      options:
+        - "Windows 11 (23H2 or newer)"
+        - "Windows 11 (22H2 or older)"
+        - "Windows 10 (22H2 or newer)"
+        - "Windows Server 2022 / 2025"
+        - "Other"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: terminal_app
+    attributes:
+      label: Terminal Environment
+      options:
+        - "Windows Terminal (wt.exe)"
+        - "Command Prompt (cmd.exe / conhost)"
+        - "PowerShell 7.x"
+        - "Windows PowerShell 5.1"
+        - "VS Code Integrated Terminal"
+        - "Other"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the Bug
+      description: Clear and concise description of the problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce this behavior?
+      placeholder: |
+        1. Open Windows Terminal as Administrator
+        2. Run `portview.exe`
+        3. Click on ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Terminal Output / Screenshots
+      description: Paste any error messages, or drag and drop screenshots here.
+      render: shell

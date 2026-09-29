@@ -1,6 +1,7 @@
 # portview
 
-A modern, zero-dependency Windows terminal dashboard and port inspector that lists open TCP/UDP ports, aggregates connections by process, monitors real-time CPU/RAM resource usage, tracks live per-connection traffic, and provides native Windows Firewall controls.
+> **A modern, interactive TUI network inspector and lightweight `netstat` / `TCPView` alternative for Windows.**  
+> Monitor open TCP/UDP ports, aggregate connections by process, track real-time CPU/RAM resource usage, measure live per-socket bandwidth, and manage Windows Firewall rules directly from your terminal with zero external dependencies.
 
 [![Platform](https://img.shields.io/badge/Platform-Windows-blue?style=flat-square&logo=windows)](https://github.com/mrun1corn/portview)
 [![Language](https://img.shields.io/badge/Language-C++17-00599C?style=flat-square&logo=cplusplus)](https://github.com/mrun1corn/portview)
@@ -9,6 +10,36 @@ A modern, zero-dependency Windows terminal dashboard and port inspector that lis
 [![Latest Release](https://img.shields.io/github/v/release/mrun1corn/portview?style=flat-square&logo=github)](https://github.com/mrun1corn/portview/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/mrun1corn/portview/total?style=flat-square&logo=github)](https://github.com/mrun1corn/portview/releases)
 [![Build & Release](https://img.shields.io/github/actions/workflow/status/mrun1corn/portview/release.yml?style=flat-square&logo=githubactions&label=build)](https://github.com/mrun1corn/portview/actions/workflows/release.yml)
+
+---
+
+## Quick Install
+
+Download and run the latest standalone executable with a single PowerShell command:
+
+```powershell
+Invoke-WebRequest -Uri "https://github.com/mrun1corn/portview/releases/latest/download/portview.exe" -OutFile "portview.exe"; .\portview.exe
+```
+
+> **ProTip:** Run your terminal as **Administrator** to enable per-connection bandwidth telemetry (`SENT` / `RECV`) and Windows Firewall rule creation. Without administrator rights, PortView functions gracefully for all port enumeration, live searching, and process inspection.
+
+---
+
+## Why PortView? (Comparison Matrix)
+
+| Feature | `portview` | `netstat -ano` | Sysinternals `TCPView` | Resource Monitor (`resmon`) |
+| :--- | :---: | :---: | :---: | :---: |
+| **Interface** | **Interactive TUI** | Static Plaintext Dump | Legacy GUI Window | Heavy GUI Dashboard |
+| **Live Type-to-Filter** | ✅ Instant | ❌ Pipes / Grep only | ⚠️ Basic text box | ⚠️ Checkboxes |
+| **Dynamic Column Sorting** | ✅ Click & F3/F5 | ❌ None | ✅ Clickable headers | ⚠️ Limited |
+| **Native Mouse Support** | ✅ Clicks & Wheel | ❌ None | ✅ Yes | ✅ Yes |
+| **External Dependencies** | ✅ **Zero** | ✅ Zero | ⚠️ Requires Sysinternals | ✅ Built-in |
+| **Process CPU% & RAM** | ✅ Live with EMA | ❌ No | ❌ No | ✅ Yes |
+| **Firewall Rule Creator** | ✅ Built-in Modal | ❌ No | ❌ No | ❌ No |
+| **Firewall Rule Toggler** | ✅ One-key (<kbd>F4</kbd>) | ❌ No | ❌ No | ❌ No |
+| **Kill Process on Port** | ✅ Built-in (<kbd>Del</kbd>) | ❌ Requires `taskkill` | ✅ Process menu | ✅ Context menu |
+| **Zero-Flicker Double Buffer** | ✅ 60fps-like | ❌ Screen clearing | ⚠️ Periodic blink | N/A |
+| **Scriptable Snapshot Mode** | ✅ `--static` | ✅ Output dump | ❌ GUI only | ❌ GUI only |
 
 ---
 
@@ -75,40 +106,51 @@ Summary: 30 TCP | 8 UDP | Allowed FW Ports: 12 | Top talker: chrome.exe (168.6 K
 
 ---
 
-## Build
+## Frequently Asked Questions (FAQ)
+
+<details>
+<summary><b>How do I find which process is listening on port 8080 or 3000?</b></summary>
+
+Launch `portview.exe`, type `8080` (or `3000`), and PortView will immediately filter down to the exact process, PID, and connection state. Press <kbd>Enter</kbd> or double-click to inspect socket details.
+</details>
+
+<details>
+<summary><b>How do I kill a process locking a port without opening Task Manager?</b></summary>
+
+Highlight the process row in PortView and press <kbd>Del</kbd> or <kbd>F8</kbd>. A safety confirmation dialog will appear. Press <kbd>Y</kbd> or click **Confirm** to terminate the process instantly.
+</details>
+
+<details>
+<summary><b>How do I open or block a port in Windows Firewall?</b></summary>
+
+Right-click on any process row or press <kbd>F2</kbd>. PortView opens an in-terminal modal prefilled with the process name and application path. Specify the ports (e.g., `8080`, `3000-3010`, or `80,443`), toggle Allow/Block, and press <kbd>Enter</kbd> to commit directly to Windows Firewall via COM.
+</details>
+
+<details>
+<summary><b>Why does bandwidth telemetry require Administrator elevation?</b></summary>
+
+Windows requires elevated privileges to query the Extended TCP/UDP statistics (`SetPerTcpConnectionEStats` / `GetPerTcpConnectionEStats`) and to modify Windows Firewall policies. Without elevation, PortView still provides complete port mapping, process resolution, and live search.
+</details>
+
+---
+
+## Build from Source
 
 ### Requirements
 - Windows 10 or 11
 - CMake 3.15+
-- MSVC (Visual Studio 2019+ or Build Tools)
+- MSVC (Visual Studio 2019+ or C++ Build Tools)
 
 ### Compilation Steps
 
 ```bash
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-cmake --build . --config Release
+git clone https://github.com/mrun1corn/portview.git
+cd portview
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
 ```
 
 The resulting standalone executable is generated at `build/Release/portview.exe`.
-
----
-
-## Usage
-
-```powershell
-# Interactive dashboard (Run terminal as Administrator for full traffic stats & firewall management)
-.\portview.exe
-
-# Static snapshot capture (scriptable / pipe-friendly)
-.\portview.exe --static
-
-# Display version
-.\portview.exe --version
-
-# Show help
-.\portview.exe --help
-```
 
 ---
 
@@ -149,17 +191,21 @@ portview/
 │   │   ├── search_filter.cpp
 │   │   └── terminal_screen.cpp
 │   └── main.cpp                  # CLI entrypoint & RAII guard initialization
-└── .github/workflows/
-    ├── release.yml               # Automated multi-release packaging & changelogs
-    └── telemetry.yml             # Download telemetry tracking & asset verification CI
+└── .github/
+    ├── workflows/
+    │   └── release.yml           # Automated multi-release packaging & changelogs
+    ├── ISSUE_TEMPLATE/
+    │   ├── bug_report.yml        # Structured bug report form
+    │   ├── feature_request.yml   # Feature proposal form
+    │   └── config.yml            # Community discussion links
+    └── pull_request_template.md  # Standardized PR checklist
 ```
 
 ---
 
-## Telemetry & CI
+## Contributing
 
-- **Release CI** (`release.yml`): Automatically compiles Release binaries on `v*` tags, generates change logs from git commits, and publishes binaries to GitHub Releases.
-- **Download Telemetry CI** (`telemetry.yml`): Runs daily and on manual triggers to query the GitHub API, track release asset download counters, generate rich GitHub Step Summary reports, verify asset download availability, and preserve historical JSON telemetry data.
+Contributions, bug reports, and suggestions are welcome! Please check out [CONTRIBUTING.md](CONTRIBUTING.md) to get started and read our [SECURITY.md](SECURITY.md) policy.
 
 ---
 
