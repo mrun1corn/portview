@@ -1,15 +1,55 @@
 #pragma once
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+
+#include <winsock2.h>
 #include <windows.h>
 #include <string>
-#include "utils.h"
+
+enum FirewallStatus {
+    FW_STATUS_NONE,      // No rule (default blocked)
+    FW_STATUS_ALLOWED,   // Explicitly allowed
+    FW_STATUS_BLOCKED    // Explicitly blocked
+};
 
 struct PreviousBytes {
-    ULONG64 sentBytes;
-    ULONG64 recvBytes;
-    DWORD timestamp;
+    ULONG64 sentBytes = 0;
+    ULONG64 recvBytes = 0;
+    DWORD timestamp = 0;
+};
+
+struct ConnectionRow {
+    std::string proto;
+    u_short localPort = 0;
+    std::string remoteAddr;
+    std::string state;
+    DWORD pid = 0;
+    std::string procName;
+    std::string sentStr = "-";
+    std::string recvStr = "-";
+    ULONG64 sentBytesVal = 0;
+    ULONG64 recvBytesVal = 0;
+    ULONG64 totalBytes = 0;
+    FirewallStatus fwStatus = FW_STATUS_NONE;
+};
+
+struct FirewallRuleRow {
+    std::wstring ruleName;
+    std::string ruleNameStr;
+    u_short port = 0;
+    std::string proto;
+    bool enabled = false;
+    bool allowed = false;
+    DWORD pid = 0;
+    std::string procName;
+    std::string state;
+    std::string sentStr = "-";
+    std::string recvStr = "-";
+    ULONG64 sentBytesVal = 0;
+    ULONG64 recvBytesVal = 0;
+    int activeConnCount = 0;
 };
 
 class ProcessSummaryRow {
@@ -22,16 +62,11 @@ public:
     std::string sentStr = "-";
     std::string recvStr = "-";
 
-    void addConnection(u_short port, ULONG64 sent, ULONG64 recv) {
+    void addConnection(u_short /*port*/, ULONG64 sent, ULONG64 recv) {
         connsCount++;
         sentBytes += sent;
         recvBytes += recv;
     }
 
-    void finalize(int uniquePortsCount) {
-        portsCount = uniquePortsCount;
-        sentStr = (sentBytes > 0) ? FormatBytes(sentBytes) : "-";
-        recvStr = (recvBytes > 0) ? FormatBytes(recvBytes) : "-";
-    }
+    void finalize(int uniquePortsCount);
 };
-

@@ -5,11 +5,36 @@
 #include <iostream>
 #include <algorithm>
 
-std::mutex g_fwMutex;
-std::unordered_map<std::string, FirewallStatus> g_fwCache;
-std::vector<FirewallRuleRow> g_fwRulesList;
+namespace {
 
-void ParseAndAddRules(const std::string& portsStr, const std::wstring& wname, const std::string& nameStr, const std::string& protoStr, bool enabled, bool allowed, const std::string& ruleProcName, std::vector<FirewallRuleRow>& tempRulesList, std::unordered_map<std::string, FirewallStatus>& tempCache) {
+struct FirewallComScope {
+    INetFwPolicy2* policy = nullptr;
+    INetFwRules* rules = nullptr;
+
+    FirewallComScope() {
+        HRESULT hr = CoCreateInstance(__uuidof(NetFwPolicy2), NULL, CLSCTX_INPROC_SERVER,
+                                      __uuidof(INetFwPolicy2), reinterpret_cast<void**>(&policy));
+        if (SUCCEEDED(hr) && policy != nullptr) {
+            hr = policy->get_Rules(&rules);
+            if (FAILED(hr) || rules == nullptr) {
+                policy->Release();
+                policy = nullptr;
+                rules = nullptr;
+            }
+        }
+    }
+
+    ~FirewallComScope() {
+        if (rules) { rules->Release(); rules = nullptr; }
+        if (policy) { policy->Release(); policy = nullptr; }
+    }
+
+    bool IsValid() const { return policy != nullptr && rules != nullptr; }
+};
+
+void ParseAndAddRules(const std::string& portsStr, const std::wstring& wname, const std::string& nameStr,
+                       const std::string& protoStr, bool enabled, bool allowed, const std::string& ruleProcName,
+                       std::vector<FirewallRuleRow>& tempRulesList, std::unordered_map<std::string, FirewallStatus>& tempCache) {
     FirewallStatus status = allowed ? FW_STATUS_ALLOWED : FW_STATUS_BLOCKED;
     std::string resolvedProc = ruleProcName;
     if (resolvedProc == "-" || resolvedProc.empty()) {
@@ -18,6 +43,19 @@ void ParseAndAddRules(const std::string& portsStr, const std::wstring& wname, co
             resolvedProc = nameStr.substr(forIdx + 5);
         }
     }
+
+    auto makeRule = [&](u_short p) {
+        FirewallRuleRow r;
+        r.ruleName = wname;
+        r.ruleNameStr = nameStr;
+        r.port = p;
+        r.proto = protoStr;
+        r.enabled = enabled;
+        r.allowed = allowed;
+        r.procName = resolvedProc;
+        return r;
+    };
+
     size_t start = 0;
     size_t end = portsStr.find(',');
     auto addRow = [&](const std::string& token) {
@@ -27,15 +65,7 @@ void ParseAndAddRules(const std::string& portsStr, const std::wstring& wname, co
                 tempCache["*:TCP"] = status;
                 tempCache["*:UDP"] = status;
             }
-            FirewallRuleRow r;
-            r.ruleName = wname;
-            r.ruleNameStr = nameStr;
-            r.port = 0;
-            r.proto = protoStr;
-            r.enabled = enabled;
-            r.allowed = allowed;
-            r.procName = resolvedProc;
-            tempRulesList.push_back(r);
+            tempRulesList.push_back(makeRule(0));
         } else {
             size_t hyphen = token.find('-');
             if (hyphen != std::string::npos) {
@@ -46,15 +76,7 @@ void ParseAndAddRules(const std::string& portsStr, const std::wstring& wname, co
                         if (enabled) {
                             tempCache[std::to_string(p) + ":" + protoStr] = status;
                         }
-                        FirewallRuleRow r;
-                        r.ruleName = wname;
-                        r.ruleNameStr = nameStr;
-                        r.port = static_cast<u_short>(p);
-                        r.proto = protoStr;
-                        r.enabled = enabled;
-                        r.allowed = allowed;
-                        r.procName = resolvedProc;
-                        tempRulesList.push_back(r);
+                        tempRulesList.push_back(makeRule(static_cast<u_short>(p)));
                     }
                 } catch (...) {}
             } else {
@@ -63,15 +85,7 @@ void ParseAndAddRules(const std::string& portsStr, const std::wstring& wname, co
                     if (enabled) {
                         tempCache[token + ":" + protoStr] = status;
                     }
-                    FirewallRuleRow r;
-                    r.ruleName = wname;
-                    r.ruleNameStr = nameStr;
-                    r.port = static_cast<u_short>(p);
-                    r.proto = protoStr;
-                    r.enabled = enabled;
-                    r.allowed = allowed;
-                    r.procName = resolvedProc;
-                    tempRulesList.push_back(r);
+                    tempRulesList.push_back(makeRule(static_cast<u_short>(p)));
                 } catch (...) {}
             }
         }
@@ -85,42 +99,26 @@ void ParseAndAddRules(const std::string& portsStr, const std::wstring& wname, co
     addRow(portsStr.substr(start));
 }
 
-void UpdateFirewallCache() {
-    HRESULT hrCom = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+} // anonymous namespace
 
-    INetFwPolicy2* pNetFwPolicy2 = nullptr;
-    HRESULT hr = CoCreateInstance(__uuidof(NetFwPolicy2), NULL, CLSCTX_INPROC_SERVER, __uuidof(INetFwPolicy2), (void**)&pNetFwPolicy2);
-    if (FAILED(hr)) {
-        if (SUCCEEDED(hrCom)) CoUninitialize();
-        return;
-    }
+FirewallManager& FirewallManager::Instance() {
+    static FirewallManager instance;
+    return instance;
+}
 
-    INetFwRules* pFwRules = nullptr;
-    hr = pNetFwPolicy2->get_Rules(&pFwRules);
-    if (FAILED(hr)) {
-        pNetFwPolicy2->Release();
-        if (SUCCEEDED(hrCom)) CoUninitialize();
-        return;
-    }
+void FirewallManager::UpdateCache() {
+    ScopedCom comGuard(COINIT_APARTMENTTHREADED);
+    FirewallComScope fwScope;
+    if (!fwScope.IsValid()) return;
 
     IUnknown* pEnumerator = nullptr;
-    hr = pFwRules->get__NewEnum(&pEnumerator);
-    if (FAILED(hr)) {
-        pFwRules->Release();
-        pNetFwPolicy2->Release();
-        if (SUCCEEDED(hrCom)) CoUninitialize();
-        return;
-    }
+    HRESULT hr = fwScope.rules->get__NewEnum(&pEnumerator);
+    if (FAILED(hr)) return;
 
     IEnumVARIANT* pVariant = nullptr;
-    hr = pEnumerator->QueryInterface(__uuidof(IEnumVARIANT), (void**)&pVariant);
+    hr = pEnumerator->QueryInterface(__uuidof(IEnumVARIANT), reinterpret_cast<void**>(&pVariant));
     pEnumerator->Release();
-    if (FAILED(hr)) {
-        pFwRules->Release();
-        pNetFwPolicy2->Release();
-        if (SUCCEEDED(hrCom)) CoUninitialize();
-        return;
-    }
+    if (FAILED(hr)) return;
 
     std::unordered_map<std::string, FirewallStatus> tempCache;
     std::vector<FirewallRuleRow> tempRulesList;
@@ -131,11 +129,11 @@ void UpdateFirewallCache() {
     while (pVariant->Next(1, &var, &cFetched) == S_OK) {
         if (var.vt == VT_DISPATCH && var.pdispVal != nullptr) {
             INetFwRule* pFwRule = nullptr;
-            hr = var.pdispVal->QueryInterface(__uuidof(INetFwRule), (void**)&pFwRule);
+            hr = var.pdispVal->QueryInterface(__uuidof(INetFwRule), reinterpret_cast<void**>(&pFwRule));
             if (SUCCEEDED(hr) && pFwRule != nullptr) {
                 VARIANT_BOOL enabled = VARIANT_FALSE;
                 NET_FW_RULE_DIRECTION dir = NET_FW_RULE_DIR_IN;
-                
+
                 pFwRule->get_Enabled(&enabled);
                 pFwRule->get_Direction(&dir);
 
@@ -157,8 +155,8 @@ void UpdateFirewallCache() {
                         std::string nameStr = WStringToString(wname);
                         if (bstrName) SysFreeString(bstrName);
 
-                        BSTR bstrApp = nullptr;
                         std::string ruleProcName = "-";
+                        BSTR bstrApp = nullptr;
                         if (SUCCEEDED(pFwRule->get_ApplicationName(&bstrApp)) && bstrApp != nullptr) {
                             std::wstring wapp(bstrApp);
                             SysFreeString(bstrApp);
@@ -189,65 +187,110 @@ void UpdateFirewallCache() {
     }
 
     pVariant->Release();
-    pFwRules->Release();
-    pNetFwPolicy2->Release();
 
     {
-        std::lock_guard<std::mutex> lock(g_fwMutex);
-        g_fwCache = std::move(tempCache);
-        g_fwRulesList = std::move(tempRulesList);
-    }
-
-    if (SUCCEEDED(hrCom)) {
-        CoUninitialize();
+        std::lock_guard<std::mutex> lock(mutex_);
+        cache_ = std::move(tempCache);
+        rulesList_ = std::move(tempRulesList);
     }
 }
 
-FirewallStatus QueryFirewallCache(u_short port, const std::string& proto) {
-    std::lock_guard<std::mutex> lock(g_fwMutex);
+FirewallStatus FirewallManager::QueryStatus(u_short port, const std::string& proto) const {
+    std::lock_guard<std::mutex> lock(mutex_);
     std::string key = std::to_string(port) + ":" + proto;
-    auto it = g_fwCache.find(key);
-    if (it != g_fwCache.end()) {
+    auto it = cache_.find(key);
+    if (it != cache_.end()) {
         return it->second;
     }
-    auto itWildcard = g_fwCache.find("*:" + proto);
-    if (itWildcard != g_fwCache.end()) {
+    auto itWildcard = cache_.find("*:" + proto);
+    if (itWildcard != cache_.end()) {
         return itWildcard->second;
     }
     return FW_STATUS_NONE;
 }
 
-bool AddFirewallRule(u_short port, bool isTcp, const std::wstring& procName, const std::wstring& appPath) {
-    INetFwPolicy2* pNetFwPolicy2 = nullptr;
-    HRESULT hr = CoCreateInstance(__uuidof(NetFwPolicy2), NULL, CLSCTX_INPROC_SERVER, __uuidof(INetFwPolicy2), (void**)&pNetFwPolicy2);
-    if (FAILED(hr)) return false;
+std::vector<FirewallRuleRow> FirewallManager::GetRulesSnapshot() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return rulesList_;
+}
 
-    INetFwRules* pFwRules = nullptr;
-    hr = pNetFwPolicy2->get_Rules(&pFwRules);
-    if (FAILED(hr)) {
-        pNetFwPolicy2->Release();
-        return false;
+int FirewallManager::CountAllowedRules() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    int count = 0;
+    for (const auto& pair : cache_) {
+        if (pair.second == FW_STATUS_ALLOWED) {
+            count++;
+        }
     }
+    return count;
+}
+
+std::vector<FirewallRuleRow> FirewallManager::FindMatchingRules(const std::string& procBase) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<FirewallRuleRow> matched;
+    for (const auto& rule : rulesList_) {
+        std::string ruleNameLower = rule.ruleNameStr;
+        std::transform(ruleNameLower.begin(), ruleNameLower.end(), ruleNameLower.begin(), ::tolower);
+        if (ruleNameLower.find(procBase) != std::string::npos) {
+            matched.push_back(rule);
+        }
+    }
+    return matched;
+}
+
+bool FirewallManager::FindRule(u_short port, const std::string& proto, const std::string& procName, std::wstring& outRuleName, bool& outIsEnabled) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& r : rulesList_) {
+        if (r.port == port && r.proto == proto) {
+            bool procMatch = (r.procName == procName);
+            if (!procMatch && (r.procName == "-" || r.procName.empty())) {
+                std::string suffix = " for " + procName;
+                if (r.ruleNameStr.length() >= suffix.length() &&
+                    r.ruleNameStr.compare(r.ruleNameStr.length() - suffix.length(), suffix.length(), suffix) == 0) {
+                    procMatch = true;
+                }
+            }
+            if (procMatch) {
+                outRuleName = r.ruleName;
+                outIsEnabled = r.enabled;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool FirewallManager::AddRule(const std::string& portsStr, bool isTcp, const std::wstring& procName,
+                             const std::wstring& appPath, bool isAllow, const std::string& customName) {
+    ScopedCom comGuard(COINIT_APARTMENTTHREADED);
+    FirewallComScope fwScope;
+    if (!fwScope.IsValid()) return false;
 
     INetFwRule* pFwRule = nullptr;
-    hr = CoCreateInstance(__uuidof(NetFwRule), NULL, CLSCTX_INPROC_SERVER, __uuidof(INetFwRule), (void**)&pFwRule);
-    if (FAILED(hr)) {
-        pFwRules->Release();
-        pNetFwPolicy2->Release();
-        return false;
+    HRESULT hr = CoCreateInstance(__uuidof(NetFwRule), NULL, CLSCTX_INPROC_SERVER, __uuidof(INetFwRule), reinterpret_cast<void**>(&pFwRule));
+    if (FAILED(hr)) return false;
+
+    std::wstring protoWStr = isTcp ? L"TCP" : L"UDP";
+    std::wstring actionWStr = isAllow ? L"Allowed" : L"Blocked";
+    std::wstring ruleName;
+    if (!customName.empty()) {
+        ruleName = std::wstring(customName.begin(), customName.end());
+    } else {
+        std::wstring pStr(portsStr.begin(), portsStr.end());
+        ruleName = L"PortView " + actionWStr + L" Port " + pStr + L" (" + protoWStr + L") for " + (procName.empty() ? L"Global" : procName);
     }
 
-    std::wstring ruleName = L"PortView Allowed Port " + std::to_wstring(port) + (isTcp ? L" (TCP)" : L" (UDP)") + L" for " + procName;
     BSTR bName = SysAllocString(ruleName.c_str());
-    BSTR bDesc = SysAllocString(L"Inbound allow rule created by PortView");
-    BSTR bPorts = SysAllocString(std::to_wstring(port).c_str());
+    std::wstring desc = L"Inbound " + (isAllow ? std::wstring(L"allow") : std::wstring(L"block")) + L" rule created by PortView";
+    BSTR bDesc = SysAllocString(desc.c_str());
+    BSTR bPorts = SysAllocString(std::wstring(portsStr.begin(), portsStr.end()).c_str());
 
     pFwRule->put_Name(bName);
     pFwRule->put_Description(bDesc);
     pFwRule->put_Protocol(isTcp ? NET_FW_IP_PROTOCOL_TCP : NET_FW_IP_PROTOCOL_UDP);
     pFwRule->put_LocalPorts(bPorts);
     pFwRule->put_Direction(NET_FW_RULE_DIR_IN);
-    pFwRule->put_Action(NET_FW_ACTION_ALLOW);
+    pFwRule->put_Action(isAllow ? NET_FW_ACTION_ALLOW : NET_FW_ACTION_BLOCK);
     pFwRule->put_Enabled(VARIANT_TRUE);
 
     if (!appPath.empty()) {
@@ -256,34 +299,24 @@ bool AddFirewallRule(u_short port, bool isTcp, const std::wstring& procName, con
         SysFreeString(bApp);
     }
 
-    hr = pFwRules->Add(pFwRule);
+    hr = fwScope.rules->Add(pFwRule);
 
     SysFreeString(bName);
     SysFreeString(bDesc);
     SysFreeString(bPorts);
-
     pFwRule->Release();
-    pFwRules->Release();
-    pNetFwPolicy2->Release();
 
     return SUCCEEDED(hr);
 }
 
-bool ToggleFirewallRule(const std::wstring& ruleName, bool enable) {
-    INetFwPolicy2* pNetFwPolicy2 = nullptr;
-    HRESULT hr = CoCreateInstance(__uuidof(NetFwPolicy2), NULL, CLSCTX_INPROC_SERVER, __uuidof(INetFwPolicy2), (void**)&pNetFwPolicy2);
-    if (FAILED(hr)) return false;
-
-    INetFwRules* pFwRules = nullptr;
-    hr = pNetFwPolicy2->get_Rules(&pFwRules);
-    if (FAILED(hr)) {
-        pNetFwPolicy2->Release();
-        return false;
-    }
+bool FirewallManager::ToggleRule(const std::wstring& ruleName, bool enable) {
+    ScopedCom comGuard(COINIT_APARTMENTTHREADED);
+    FirewallComScope fwScope;
+    if (!fwScope.IsValid()) return false;
 
     INetFwRule* pFwRule = nullptr;
     BSTR bName = SysAllocString(ruleName.c_str());
-    hr = pFwRules->Item(bName, &pFwRule);
+    HRESULT hr = fwScope.rules->Item(bName, &pFwRule);
     SysFreeString(bName);
 
     if (SUCCEEDED(hr) && pFwRule != nullptr) {
@@ -291,76 +324,17 @@ bool ToggleFirewallRule(const std::wstring& ruleName, bool enable) {
         pFwRule->Release();
     }
 
-    pFwRules->Release();
-    pNetFwPolicy2->Release();
     return SUCCEEDED(hr);
 }
 
-bool DeleteFirewallRule(const std::wstring& ruleName) {
-    INetFwPolicy2* pNetFwPolicy2 = nullptr;
-    HRESULT hr = CoCreateInstance(__uuidof(NetFwPolicy2), NULL, CLSCTX_INPROC_SERVER, __uuidof(INetFwPolicy2), (void**)&pNetFwPolicy2);
-    if (FAILED(hr)) return false;
-
-    INetFwRules* pFwRules = nullptr;
-    hr = pNetFwPolicy2->get_Rules(&pFwRules);
-    if (FAILED(hr)) {
-        pNetFwPolicy2->Release();
-        return false;
-    }
+bool FirewallManager::DeleteRule(const std::wstring& ruleName) {
+    ScopedCom comGuard(COINIT_APARTMENTTHREADED);
+    FirewallComScope fwScope;
+    if (!fwScope.IsValid()) return false;
 
     BSTR bName = SysAllocString(ruleName.c_str());
-    hr = pFwRules->Remove(bName);
+    HRESULT hr = fwScope.rules->Remove(bName);
     SysFreeString(bName);
 
-    pFwRules->Release();
-    pNetFwPolicy2->Release();
     return SUCCEEDED(hr);
-}
-
-void BuildFirewallRuleRows(const std::vector<ConnectionRow>& connections, std::vector<FirewallRuleRow>& rules) {
-    {
-        std::lock_guard<std::mutex> lock(g_fwMutex);
-        rules = g_fwRulesList;
-    }
-
-    for (auto& rule : rules) {
-        rule.activeConnCount = 0;
-        rule.sentBytesVal = 0;
-        rule.recvBytesVal = 0;
-        rule.pid = 0;
-        if (rule.procName.empty()) {
-            rule.procName = "-";
-        }
-        rule.state = "IDLE";
-        rule.sentStr = "-";
-        rule.recvStr = "-";
-
-        for (const auto& conn : connections) {
-            if ((rule.port == 0 || conn.localPort == rule.port) && conn.proto == rule.proto) {
-                rule.activeConnCount++;
-                if (rule.pid == 0 || conn.state == "LISTENING") {
-                    rule.pid = conn.pid;
-                    rule.procName = conn.procName;
-                    rule.state = conn.state;
-                }
-                rule.sentBytesVal += conn.sentBytesVal;
-                rule.recvBytesVal += conn.recvBytesVal;
-            }
-        }
-
-        if (rule.activeConnCount > 0) {
-            rule.sentStr = (rule.sentBytesVal > 0) ? FormatBytes(rule.sentBytesVal) : "-";
-            rule.recvStr = (rule.recvBytesVal > 0) ? FormatBytes(rule.recvBytesVal) : "-";
-        }
-    }
-
-    std::sort(rules.begin(), rules.end(), [](const FirewallRuleRow& a, const FirewallRuleRow& b) {
-        if (a.activeConnCount != b.activeConnCount) {
-            return a.activeConnCount > b.activeConnCount;
-        }
-        if (a.enabled != b.enabled) {
-            return a.enabled > b.enabled;
-        }
-        return a.port < b.port;
-    });
 }

@@ -1,20 +1,34 @@
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+
 #include <winsock2.h>
 #include "process_resolver.h"
 #include "utils.h"
 #include <psapi.h>
+#include <mutex>
+#include <unordered_map>
 
-std::string GetProcessName(DWORD pid) {
-    static std::unordered_map<DWORD, std::string> cache;
-    auto it = cache.find(pid);
-    if (it != cache.end()) {
-        return it->second;
-    }
+namespace {
+    std::mutex g_procCacheMutex;
+    std::unordered_map<DWORD, std::string> g_procNameCache;
+    std::unordered_map<DWORD, std::wstring> g_procPathCache;
+}
 
+std::string ProcessResolver::GetProcessName(DWORD pid) {
     if (pid == 0) {
         return "System Idle Process";
-    } else if (pid == 4) {
+    }
+    if (pid == 4) {
         return "System";
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_procCacheMutex);
+        auto it = g_procNameCache.find(pid);
+        if (it != g_procNameCache.end()) {
+            return it->second;
+        }
     }
 
     std::string processName = "Unknown";
@@ -34,12 +48,28 @@ std::string GetProcessName(DWORD pid) {
         }
         CloseHandle(hProcess);
     }
-    cache[pid] = processName;
+
+    {
+        std::lock_guard<std::mutex> lock(g_procCacheMutex);
+        g_procNameCache[pid] = processName;
+    }
+
     return processName;
 }
 
-std::wstring GetProcessImagePath(DWORD pid) {
-    if (pid == 0 || pid == 4) return L"";
+std::wstring ProcessResolver::GetProcessImagePath(DWORD pid) {
+    if (pid == 0 || pid == 4) {
+        return L"";
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_procCacheMutex);
+        auto it = g_procPathCache.find(pid);
+        if (it != g_procPathCache.end()) {
+            return it->second;
+        }
+    }
+
     std::wstring pathStr = L"";
     HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (hProcess != NULL) {
@@ -50,5 +80,11 @@ std::wstring GetProcessImagePath(DWORD pid) {
         }
         CloseHandle(hProcess);
     }
+
+    {
+        std::lock_guard<std::mutex> lock(g_procCacheMutex);
+        g_procPathCache[pid] = pathStr;
+    }
+
     return pathStr;
 }

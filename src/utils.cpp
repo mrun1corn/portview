@@ -3,7 +3,40 @@
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
 #include <tcpestats.h>
-#include <stdio.h>
+#include <cstdio>
+#include <iostream>
+
+ScopedWinsock::ScopedWinsock() {
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) == 0) {
+        initialized_ = true;
+    } else {
+        std::cerr << "Failed to initialize Winsock.\n";
+    }
+}
+
+ScopedWinsock::~ScopedWinsock() {
+    if (initialized_) {
+        WSACleanup();
+        initialized_ = false;
+    }
+}
+
+ScopedCom::ScopedCom(DWORD coInit) {
+    hr_ = CoInitializeEx(NULL, coInit);
+}
+
+ScopedCom::~ScopedCom() {
+    if (SUCCEEDED(hr_)) {
+        CoUninitialize();
+    }
+}
+
+void ProcessSummaryRow::finalize(int uniquePortsCount) {
+    portsCount = uniquePortsCount;
+    sentStr = (sentBytes > 0) ? FormatBytes(sentBytes) : "-";
+    recvStr = (recvBytes > 0) ? FormatBytes(recvBytes) : "-";
+}
 
 std::string TcpStateToString(DWORD state) {
     switch (state) {
@@ -35,7 +68,7 @@ std::string IpToString(DWORD ipAddress) {
 
 std::string FormatBytes(ULONG64 bytes) {
     double num = static_cast<double>(bytes);
-    const char* units[] = {"B", "KB", "MB", "GB", "TB"};
+    constexpr const char* units[] = {"B", "KB", "MB", "GB", "TB"};
     int unitIndex = 0;
     while (num >= 1024.0 && unitIndex < 4) {
         num /= 1024.0;
@@ -43,18 +76,18 @@ std::string FormatBytes(ULONG64 bytes) {
     }
     char buf[64];
     if (unitIndex == 0) {
-        sprintf(buf, "%d B", static_cast<int>(bytes));
+        std::snprintf(buf, sizeof(buf), "%llu B", bytes);
     } else {
-        sprintf(buf, "%.1f %s", num, units[unitIndex]);
+        std::snprintf(buf, sizeof(buf), "%.1f %s", num, units[unitIndex]);
     }
     return buf;
 }
 
 std::string FormatSpeed(double bytesPerSec) {
-    if (bytesPerSec < 0) return "-";
-    if (bytesPerSec == 0) return "0 B/s";
+    if (bytesPerSec < 0.0) return "-";
+    if (bytesPerSec == 0.0) return "0 B/s";
     double num = bytesPerSec;
-    const char* units[] = {"B/s", "KB/s", "MB/s", "GB/s", "TB/s"};
+    constexpr const char* units[] = {"B/s", "KB/s", "MB/s", "GB/s", "TB/s"};
     int unitIndex = 0;
     while (num >= 1024.0 && unitIndex < 4) {
         num /= 1024.0;
@@ -62,20 +95,23 @@ std::string FormatSpeed(double bytesPerSec) {
     }
     char buf[64];
     if (unitIndex == 0) {
-        sprintf(buf, "%d B/s", static_cast<int>(bytesPerSec));
+        std::snprintf(buf, sizeof(buf), "%d B/s", static_cast<int>(bytesPerSec));
     } else {
-        sprintf(buf, "%.1f %s", num, units[unitIndex]);
+        std::snprintf(buf, sizeof(buf), "%.1f %s", num, units[unitIndex]);
     }
     return buf;
 }
 
 std::string WStringToString(const std::wstring& wstr) {
     if (wstr.empty()) return "";
-    int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
+    int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), NULL, 0, NULL, NULL);
+    if (sizeNeeded <= 0) return "";
     std::string strTo(sizeNeeded, 0);
-    WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], sizeNeeded, NULL, NULL);
+    WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), &strTo[0], sizeNeeded, NULL, NULL);
     return strTo;
 }
+
+
 bool IsElevated() {
     bool elevated = false;
     HANDLE hToken = NULL;
@@ -83,10 +119,9 @@ bool IsElevated() {
         TOKEN_ELEVATION elevation;
         DWORD size = sizeof(elevation);
         if (GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &size)) {
-            elevated = elevation.TokenIsElevated != 0;
+            elevated = (elevation.TokenIsElevated != 0);
         }
         CloseHandle(hToken);
     }
     return elevated;
 }
-

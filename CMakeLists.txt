@@ -21,5 +21,5 @@ target_link_libraries(portview PRIVATE iphlpapi ws2_32 ole32 oleaut32)
 
 # Force UAC prompt for administrator privileges on launch (required for TCP EStats traffic monitoring)
 if(MSVC)
-    target_link_options(portview PRIVATE "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'")
+    target_link_options(portview PRIVATE "/MANIFESTUAC:level='asInvoker' uiAccess='false'")
 endif()

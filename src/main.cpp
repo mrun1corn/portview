@@ -5,78 +5,19 @@
 #define _UNICODE
 #endif
 
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <windows.h>
-#include <iphlpapi.h>
-#include <tcpestats.h>
-#include <iostream>
-#include <vector>
-#include <string>
-#include <algorithm>
-#include <unordered_map>
-#include <netfw.h>
-#include <objbase.h>
-#include <thread>
-#include <mutex>
-#include <unordered_set>
-#include <io.h>
 #include "utils.h"
-#include "process_resolver.h"
-#include "data_models.h"
-#include "network_tables.h"
 #include "ui_renderer.h"
-#include "firewall.h"
 
-// Link with iphlpapi.lib and ws2_32.lib
+#include <iostream>
+#include <string>
+
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "ws2_32.lib")
-
-// Convert TCP connection state to string
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 int main(int argc, char* argv[]) {
     bool staticMode = false;
 
-    // Simple Argument Parsing
+    // Command-line argument parsing
     if (argc > 1) {
         std::string arg = argv[1];
         if (arg == "-h" || arg == "--help") {
@@ -96,36 +37,26 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // If output is redirected to a file or pipe, default to static mode
-    if (!IsStdoutTerminal()) {
+    // Default to static snapshot mode if redirected or piped
+    if (!Terminal::IsStdoutTerminal()) {
         staticMode = true;
     }
 
-    HRESULT hrCom = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-
-    // Initialize Winsock (required for IpToString and network operations)
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        std::cerr << "Failed to initialize Winsock.\n";
+    // RAII subsystem initialization
+    ScopedCom comGuard(COINIT_APARTMENTTHREADED);
+    ScopedWinsock winsockGuard;
+    if (!winsockGuard.IsInitialized()) {
         return 1;
     }
 
     if (!staticMode) {
-        EnableVirtualTerminalProcessing();
-    }
-
-    if (staticMode) {
-        PrintStaticOutput();
-        PauseIfSpawnedConsole();
-    } else {
+        Terminal::EnableVirtualTerminalProcessing();
         RunInteractiveLoop();
-        PauseIfSpawnedConsole();
+        Terminal::PauseIfSpawnedConsole();
+    } else {
+        PrintStaticOutput();
+        Terminal::PauseIfSpawnedConsole();
     }
 
-    if (SUCCEEDED(hrCom)) {
-        CoUninitialize();
-    }
-
-    WSACleanup();
     return 0;
 }

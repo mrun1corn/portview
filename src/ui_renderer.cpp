@@ -1,12 +1,21 @@
-#include <unordered_set>
 #include "ui_renderer.h"
 #include "data_models.h"
 #include "network_tables.h"
+#include "firewall.h"
+#include "process_resolver.h"
+#include "utils.h"
+
 #include <iostream>
 #include <io.h>
 #include <conio.h>
 #include <iomanip>
 #include <algorithm>
+#include <unordered_set>
+#include <thread>
+#include <cstdio>
+#include <cctype>
+
+namespace Terminal {
 
 bool IsStdoutTerminal() {
     return _isatty(_fileno(stdout)) != 0;
@@ -28,7 +37,7 @@ void ShowConsoleCursor(bool showFlag) {
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     CONSOLE_CURSOR_INFO cursorInfo;
     GetConsoleCursorInfo(hOut, &cursorInfo);
-    cursorInfo.bVisible = showFlag;
+    cursorInfo.bVisible = showFlag ? TRUE : FALSE;
     SetConsoleCursorInfo(hOut, &cursorInfo);
 }
 
@@ -36,7 +45,7 @@ void SetCursorPosition(int x, int y) {
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     CONSOLE_SCREEN_BUFFER_INFO csbi;
     if (GetConsoleScreenBufferInfo(hOut, &csbi)) {
-        COORD coord = { (SHORT)(csbi.srWindow.Left + x), (SHORT)(csbi.srWindow.Top + y) };
+        COORD coord = { static_cast<SHORT>(csbi.srWindow.Left + x), static_cast<SHORT>(csbi.srWindow.Top + y) };
         SetConsoleCursorPosition(hOut, coord);
     }
 }
@@ -59,29 +68,80 @@ bool EnableVirtualTerminalProcessing() {
     return SetConsoleMode(hOut, dwMode) != 0;
 }
 
+} // namespace Terminal
+
+namespace {
+
+std::string PadOrTrim(std::string str, int targetWidth) {
+    if (targetWidth <= 0) return "";
+    size_t width = static_cast<size_t>(targetWidth);
+    if (str.length() < width) {
+        str.append(width - str.length(), ' ');
+    } else if (str.length() > width) {
+        str = str.substr(0, width);
+    }
+    return str;
+}
+
+void RenderAddRuleModal(int consoleWidth, int consoleHeight,
+                        const std::string& procName, DWORD pid,
+                        bool isTcp, bool isAllow, const std::string& portsInput,
+                        bool isElevated) {
+    constexpr int boxWidth = 64;
+    constexpr int boxHeight = 10;
+    int startX = (consoleWidth - boxWidth) / 2;
+    int startY = (consoleHeight - boxHeight) / 2;
+    if (startX < 0) startX = 0;
+    if (startY < 2) startY = 2;
+
+    auto printBoxLine = [&](int y, const std::string& text, const char* color = "\x1b[97;44m") {
+        Terminal::SetCursorPosition(startX, y);
+        std::string line = PadOrTrim(text, boxWidth);
+        std::cout << color << line << "\x1b[0m";
+    };
+
+    std::string pidStr = (pid == 0) ? "N/A" : std::to_string(pid);
+    std::string procStr = procName.empty() ? "Global (All Processes)" : procName + " (PID " + pidStr + ")";
+    std::string protoStr = isTcp ? "[ TCP ] (Press Tab for UDP)" : "[ UDP ] (Press Tab for TCP)";
+    std::string actionStr = isAllow ? "[ ALLOW ] (F2: Toggle Block)" : "[ BLOCK ] (F2: Toggle Allow)";
+    std::string inputDisplay = portsInput + "_";
+
+    printBoxLine(startY + 0, " +----------------- ADD INBOUND FIREWALL RULE ----------------+ ", "\x1b[97;44;1m");
+    printBoxLine(startY + 1, " | Target   : " + procStr);
+    printBoxLine(startY + 2, " | Protocol : " + protoStr);
+    printBoxLine(startY + 3, " | Action   : " + actionStr);
+    printBoxLine(startY + 4, " | Port(s)  : " + inputDisplay, "\x1b[93;44;1m");
+    printBoxLine(startY + 5, " | Formats  : 8080 | 8000-8080 | 80,443 | 8080/udp          ");
+    if (!isElevated) {
+        printBoxLine(startY + 6, " | WARNING  : NOT ELEVATED (Requires Admin to save rule)       ", "\x1b[93;41;1m");
+    } else {
+        printBoxLine(startY + 6, " | Status   : Elevated (Administrator Privileges Verified)     ", "\x1b[92;44m");
+    }
+    printBoxLine(startY + 7, " +-------------------------------------------------------------+ ", "\x1b[97;44;1m");
+    printBoxLine(startY + 8, "   [Enter] Save Rule    [Tab] Protocol    [Esc] Cancel           ", "\x1b[30;107m");
+}
+
+} // anonymous namespace
+
 void PrintSummaryRow(const ProcessSummaryRow& row, bool selected, int width) {
     char rowBuf[512];
     if (selected) {
-        sprintf(rowBuf, " > %-25s %-7d %-7d %-12s %-12s",
-                row.procName.substr(0, 25).c_str(), row.portsCount, row.connsCount, row.sentStr.c_str(), row.recvStr.c_str());
-        std::string rowStr(rowBuf);
-        if (rowStr.length() < (size_t)width - 1) {
-            rowStr.append((width - 1) - rowStr.length(), ' ');
-        } else if (rowStr.length() > (size_t)width - 1) {
-            rowStr = rowStr.substr(0, width - 1);
-        }
+        std::snprintf(rowBuf, sizeof(rowBuf), " > %-25s %-7d %-7d %-12s %-12s",
+                      row.procName.substr(0, 25).c_str(), row.portsCount, row.connsCount,
+                      row.sentStr.c_str(), row.recvStr.c_str());
+        std::string rowStr = PadOrTrim(rowBuf, width - 1);
         std::cout << "\x1b[30;106m" << rowStr << "\x1b[0m\n";
     } else {
         std::cout << "   ";
-        printf("\x1b[36;1m%-25s\x1b[0m ", row.procName.substr(0, 25).c_str());
-        printf("%-7d ", row.portsCount);
-        printf("%-7d ", row.connsCount);
-        
-        if (row.sentStr != "-") printf("\x1b[92m%-12s\x1b[0m ", row.sentStr.c_str());
-        else printf("\x1b[90m%-12s\x1b[0m ", "-");
-        
-        if (row.recvStr != "-") printf("\x1b[92m%-12s\x1b[0m", row.recvStr.c_str());
-        else printf("\x1b[90m%-12s\x1b[0m", "-");
+        std::printf("\x1b[36;1m%-25s\x1b[0m ", row.procName.substr(0, 25).c_str());
+        std::printf("%-7d ", row.portsCount);
+        std::printf("%-7d ", row.connsCount);
+
+        if (row.sentStr != "-") std::printf("\x1b[92m%-12s\x1b[0m ", row.sentStr.c_str());
+        else std::printf("\x1b[90m%-12s\x1b[0m ", "-");
+
+        if (row.recvStr != "-") std::printf("\x1b[92m%-12s\x1b[0m", row.recvStr.c_str());
+        else std::printf("\x1b[90m%-12s\x1b[0m", "-");
 
         int visualLength = 3 + 26 + 8 + 8 + 13 + 12;
         if (visualLength < width - 1) {
@@ -92,43 +152,39 @@ void PrintSummaryRow(const ProcessSummaryRow& row, bool selected, int width) {
 }
 
 void PrintDetailRow(const ConnectionRow& row, bool selected, int width) {
-    if (selected) {
-        char rowBuf[512];
-        std::string fwStr = "DEFAULT";
-        if (row.fwStatus == FW_STATUS_ALLOWED) fwStr = "ALLOWED";
-        else if (row.fwStatus == FW_STATUS_BLOCKED) fwStr = "BLOCKED";
+    std::string fwStr = "DEFAULT";
+    if (row.fwStatus == FW_STATUS_ALLOWED) fwStr = "ALLOWED";
+    else if (row.fwStatus == FW_STATUS_BLOCKED) fwStr = "BLOCKED";
 
-        sprintf(rowBuf, " > %-6s %-7u %-20s %-13s %-11s %-11s %-10s",
-                row.proto.c_str(), row.localPort, row.remoteAddr.substr(0, 20).c_str(), row.state.c_str(), row.sentStr.c_str(), row.recvStr.c_str(), fwStr.c_str());
-        std::string rowStr(rowBuf);
-        if (rowStr.length() < (size_t)width - 1) {
-            rowStr.append((width - 1) - rowStr.length(), ' ');
-        } else if (rowStr.length() > (size_t)width - 1) {
-            rowStr = rowStr.substr(0, width - 1);
-        }
+    char rowBuf[512];
+    if (selected) {
+        std::snprintf(rowBuf, sizeof(rowBuf), " > %-6s %-7u %-20s %-13s %-11s %-11s %-10s",
+                      row.proto.c_str(), row.localPort, row.remoteAddr.substr(0, 20).c_str(),
+                      row.state.c_str(), row.sentStr.c_str(), row.recvStr.c_str(), fwStr.c_str());
+        std::string rowStr = PadOrTrim(rowBuf, width - 1);
         std::cout << "\x1b[30;106m" << rowStr << "\x1b[0m\n";
     } else {
         std::cout << "   ";
-        
-        if (row.proto == "TCP") printf("\x1b[36m%-6s\x1b[0m ", "TCP");
-        else printf("\x1b[93m%-6s\x1b[0m ", "UDP");
 
-        printf("%-7u ", row.localPort);
-        printf("\x1b[93m%-20s\x1b[0m ", row.remoteAddr.substr(0, 20).c_str());
+        if (row.proto == "TCP") std::printf("\x1b[36m%-6s\x1b[0m ", "TCP");
+        else std::printf("\x1b[93m%-6s\x1b[0m ", "UDP");
 
-        if (row.state == "ESTABLISHED") printf("\x1b[92m%-13s\x1b[0m ", "ESTABLISHED");
-        else if (row.state == "LISTENING") printf("\x1b[36m%-13s\x1b[0m ", "LISTENING");
-        else printf("\x1b[90m%-13s\x1b[0m ", row.state.c_str());
+        std::printf("%-7u ", row.localPort);
+        std::printf("\x1b[93m%-20s\x1b[0m ", row.remoteAddr.substr(0, 20).c_str());
 
-        if (row.sentStr != "-") printf("\x1b[92m%-11s\x1b[0m ", row.sentStr.c_str());
-        else printf("\x1b[90m%-11s\x1b[0m ", "-");
+        if (row.state == "ESTABLISHED") std::printf("\x1b[92m%-13s\x1b[0m ", "ESTABLISHED");
+        else if (row.state == "LISTENING") std::printf("\x1b[36m%-13s\x1b[0m ", "LISTENING");
+        else std::printf("\x1b[90m%-13s\x1b[0m ", row.state.c_str());
 
-        if (row.recvStr != "-") printf("\x1b[92m%-11s\x1b[0m ", row.recvStr.c_str());
-        else printf("\x1b[90m%-11s\x1b[0m ", "-");
+        if (row.sentStr != "-") std::printf("\x1b[92m%-11s\x1b[0m ", row.sentStr.c_str());
+        else std::printf("\x1b[90m%-11s\x1b[0m ", "-");
 
-        if (row.fwStatus == FW_STATUS_ALLOWED) printf("\x1b[92m%-10s\x1b[0m", "ALLOWED");
-        else if (row.fwStatus == FW_STATUS_BLOCKED) printf("\x1b[91m%-10s\x1b[0m", "BLOCKED");
-        else printf("\x1b[90m%-10s\x1b[0m", "DEFAULT");
+        if (row.recvStr != "-") std::printf("\x1b[92m%-11s\x1b[0m ", row.recvStr.c_str());
+        else std::printf("\x1b[90m%-11s\x1b[0m ", "-");
+
+        if (row.fwStatus == FW_STATUS_ALLOWED) std::printf("\x1b[92m%-10s\x1b[0m", "ALLOWED");
+        else if (row.fwStatus == FW_STATUS_BLOCKED) std::printf("\x1b[91m%-10s\x1b[0m", "BLOCKED");
+        else std::printf("\x1b[90m%-10s\x1b[0m", "DEFAULT");
 
         int visualLength = 3 + 7 + 8 + 21 + 14 + 12 + 12 + 10;
         if (visualLength < width - 1) {
@@ -154,20 +210,12 @@ void PrintStaticOutput() {
     std::cout << "Process Summary (" << summaries.size() << " active processes)\n";
     std::cout << "PROCESS                   PORTS   CONNS   SENT         RECV\n";
     for (const auto& row : summaries) {
-        printf("%-25s %-7d %-7d %-12s %-12s\n",
-               row.procName.substr(0, 25).c_str(), row.portsCount, row.connsCount,
-               row.sentStr.c_str(), row.recvStr.c_str());
+        std::printf("%-25s %-7d %-7d %-12s %-12s\n",
+                    row.procName.substr(0, 25).c_str(), row.portsCount, row.connsCount,
+                    row.sentStr.c_str(), row.recvStr.c_str());
     }
 
-    int allowedFwRules = 0;
-    {
-        std::lock_guard<std::mutex> lock(g_fwMutex);
-        for (const auto& pair : g_fwCache) {
-            if (pair.second == FW_STATUS_ALLOWED) {
-                allowedFwRules++;
-            }
-        }
-    }
+    int allowedFwRules = FirewallManager::Instance().CountAllowedRules();
 
     std::string topTalker = "";
     ULONG64 maxTraffic = 0;
@@ -190,18 +238,22 @@ void RunInteractiveLoop() {
     ViewState currentView = VIEW_SUMMARY;
     DWORD selectedPid = 0;
     std::string selectedProcName = "";
-    u_short selectedPort = 0;
-    std::string selectedProto = "";
-    std::wstring selectedRuleName = L"";
     int selectedIndex = 0;
     int scrollOffset = 0;
+
+    // Rule creation modal state
     bool enteringRule = false;
-    std::string inputBuffer = "";
+    std::string ruleTargetProc = "";
+    DWORD ruleTargetPid = 0;
+    bool ruleIsTcp = true;
+    bool ruleIsAllow = true;
+    std::string rulePortsInput = "";
+
     std::string statusMessage = "";
     DWORD statusMessageTimer = 0;
     bool running = true;
     DWORD lastRefreshTime = 0;
-    const DWORD refreshIntervalMs = 1500;
+    constexpr DWORD kRefreshIntervalMs = 1500;
 
     std::vector<ConnectionRow> connections;
     std::unordered_map<std::string, ULONG64> processTraffic;
@@ -212,12 +264,14 @@ void RunInteractiveLoop() {
     std::vector<ProcessSummaryRow> summaries;
     BuildProcessSummaries(connections, summaries);
     lastRefreshTime = GetTickCount();
+
+    // Trigger initial background firewall refresh
     std::thread(UpdateFirewallCache).detach();
 
-    ShowConsoleCursor(false);
+    Terminal::ShowConsoleCursor(false);
 
     HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
-    DWORD prevMode;
+    DWORD prevMode = 0;
     GetConsoleMode(hInput, &prevMode);
     SetConsoleMode(hInput, (prevMode & ~ENABLE_MOUSE_INPUT) | ENABLE_PROCESSED_INPUT | ENABLE_WINDOW_INPUT);
 
@@ -225,8 +279,8 @@ void RunInteractiveLoop() {
     int lastHeight = 0;
 
     while (running) {
-        int width, height;
-        GetConsoleSize(width, height);
+        int width = 0, height = 0;
+        Terminal::GetConsoleSize(width, height);
         if (width != lastWidth || height != lastHeight) {
             std::cout << "\x1b[2J\x1b[H" << std::flush;
             COORD coord;
@@ -237,13 +291,13 @@ void RunInteractiveLoop() {
             lastHeight = height;
         }
 
-        int headerLines = 2; // Banner + Columns
-        int footerLines = 1; // Summary
+        constexpr int headerLines = 2; // Banner + Columns
+        constexpr int footerLines = 1; // Summary
         int viewportHeight = height - headerLines - footerLines - 1;
         if (viewportHeight < 0) viewportHeight = 0;
 
         DWORD currentTime = GetTickCount();
-        if (currentTime - lastRefreshTime >= refreshIntervalMs) {
+        if (currentTime - lastRefreshTime >= kRefreshIntervalMs) {
             LoadData(connections, processTraffic, tcpCount, udpCount);
             BuildProcessSummaries(connections, summaries);
             lastRefreshTime = currentTime;
@@ -274,18 +328,7 @@ void RunInteractiveLoop() {
             }
             std::transform(procBase.begin(), procBase.end(), procBase.begin(), ::tolower);
 
-            std::vector<FirewallRuleRow> matchedRules;
-            {
-                std::lock_guard<std::mutex> lock(g_fwMutex);
-                for (const auto& rule : g_fwRulesList) {
-                    std::string ruleNameLower = rule.ruleNameStr;
-                    std::transform(ruleNameLower.begin(), ruleNameLower.end(), ruleNameLower.begin(), ::tolower);
-                    if (ruleNameLower.find(procBase) != std::string::npos) {
-                        matchedRules.push_back(rule);
-                    }
-                }
-            }
-
+            std::vector<FirewallRuleRow> matchedRules = FirewallManager::Instance().FindMatchingRules(procBase);
             for (const auto& rule : matchedRules) {
                 std::string key = std::to_string(rule.port) + ":" + rule.proto;
                 if (portProtoSeen.find(key) == portProtoSeen.end()) {
@@ -296,11 +339,6 @@ void RunInteractiveLoop() {
                     conn.state = "IDLE";
                     conn.pid = 0;
                     conn.procName = selectedProcName;
-                    conn.sentStr = "-";
-                    conn.recvStr = "-";
-                    conn.sentBytesVal = 0;
-                    conn.recvBytesVal = 0;
-                    conn.totalBytes = 0;
                     conn.fwStatus = rule.enabled ? (rule.allowed ? FW_STATUS_ALLOWED : FW_STATUS_BLOCKED) : FW_STATUS_NONE;
 
                     detailRows.push_back(conn);
@@ -342,48 +380,36 @@ void RunInteractiveLoop() {
             scrollOffset = 0;
         }
 
-        SetCursorPosition(0, 0);
+        Terminal::SetCursorPosition(0, 0);
 
         // Render Banner
         char headerBuf[256];
         if (currentView == VIEW_SUMMARY) {
             if (IsElevated()) {
-                sprintf(headerBuf, "portview v1.4 [ELEVATED] | Arrows: Nav | Enter: View | A: Add Rule | Esc: Quit");
+                std::snprintf(headerBuf, sizeof(headerBuf), "portview v1.4 [ELEVATED] | Arrows: Nav | Enter: View Details | A: Add Rule | Esc: Quit");
             } else {
-                sprintf(headerBuf, "portview v1.4 [NON-ELEVATED] (Run as Admin for Traffic) | Arrows: Nav | Enter: View | A: Add Rule | Esc: Quit");
+                std::snprintf(headerBuf, sizeof(headerBuf), "portview v1.4 [NON-ELEVATED] | Arrows: Nav | Enter: View Details | A: Add Rule | Esc: Quit");
             }
         } else {
             std::string pidStr = (selectedPid == 0) ? "IDLE" : "PID " + std::to_string(selectedPid);
             if (IsElevated()) {
-                sprintf(headerBuf, "Process: %s (%s) [ELEVATED] | A: Add Rule | S: Toggle FW | D: Del FW | Esc: Back", selectedProcName.c_str(), pidStr.c_str());
+                std::snprintf(headerBuf, sizeof(headerBuf), "Process: %s (%s) [ELEVATED] | A: Add Rule | S: Toggle FW | D: Del FW | Esc: Back", selectedProcName.c_str(), pidStr.c_str());
             } else {
-                sprintf(headerBuf, "Process: %s (%s) [NON-ELEVATED] | A: Add Rule | S: Toggle FW | D: Del FW | Esc: Back", selectedProcName.c_str(), pidStr.c_str());
+                std::snprintf(headerBuf, sizeof(headerBuf), "Process: %s (%s) [NON-ELEVATED] | A: Add Rule | S: Toggle FW | D: Del FW | Esc: Back", selectedProcName.c_str(), pidStr.c_str());
             }
         }
-        std::string headerStr(headerBuf);
-        if (headerStr.length() < (size_t)width - 1) {
-            headerStr.append((width - 1) - headerStr.length(), ' ');
-        } else if (headerStr.length() > (size_t)width - 1) {
-            headerStr = headerStr.substr(0, width - 1);
-        }
-        std::cout << "\x1b[30;106m" << headerStr << "\x1b[0m\n";
+        std::cout << "\x1b[30;106m" << PadOrTrim(headerBuf, width - 1) << "\x1b[0m\n";
 
         // Render Column Headers
         char colBuf[256];
         if (currentView == VIEW_SUMMARY) {
-            sprintf(colBuf, "   %-25s %-7s %-7s %-12s %-12s",
-                    "PROCESS", "PORTS", "CONNS", "SENT", "RECV");
+            std::snprintf(colBuf, sizeof(colBuf), "   %-25s %-7s %-7s %-12s %-12s",
+                          "PROCESS", "PORTS", "CONNS", "SENT", "RECV");
         } else {
-            sprintf(colBuf, "   %-6s %-7s %-20s %-13s %-11s %-11s %-10s",
-                    "PROTO", "PORT", "REMOTE", "STATE", "SENT", "RECV", "FIREWALL");
+            std::snprintf(colBuf, sizeof(colBuf), "   %-6s %-7s %-20s %-13s %-11s %-11s %-10s",
+                          "PROTO", "PORT", "REMOTE", "STATE", "SENT", "RECV", "FIREWALL");
         }
-        std::string colStr(colBuf);
-        if (colStr.length() < (size_t)width - 1) {
-            colStr.append((width - 1) - colStr.length(), ' ');
-        } else if (colStr.length() > (size_t)width - 1) {
-            colStr = colStr.substr(0, width - 1);
-        }
-        std::cout << "\x1b[36;1m" << colStr << "\x1b[0m\n";
+        std::cout << "\x1b[36;1m" << PadOrTrim(colBuf, width - 1) << "\x1b[0m\n";
 
         // Render Viewport rows
         for (int i = 0; i < viewportHeight; ++i) {
@@ -396,50 +422,37 @@ void RunInteractiveLoop() {
                     PrintDetailRow(detailRows[idx], isSelected, width);
                 }
             } else {
-                std::string emptyStr(width - 1, ' ');
-                std::cout << emptyStr << "\n";
+                std::cout << std::string(width > 1 ? width - 1 : 0, ' ') << "\n";
             }
         }
 
+        // Render Status Bar
         std::string summaryStr = "";
-        if (enteringRule) {
-            summaryStr = "Add Inbound Allow Rule -> Enter Port (e.g., 80/tcp or 53/udp): " + inputBuffer + "_ [Backspace: Delete, Enter: Submit, Esc: Cancel]";
+        if (!statusMessage.empty() && currentTime - statusMessageTimer < 4000) {
+            summaryStr = statusMessage;
         } else {
-            if (!statusMessage.empty() && currentTime - statusMessageTimer < 4000) {
-                summaryStr = statusMessage;
-            } else {
-                statusMessage.clear();
-                std::string topTalker = "";
-                ULONG64 maxTraffic = 0;
-                for (const auto& pair : processTraffic) {
-                    if (pair.second > maxTraffic) {
-                        maxTraffic = pair.second;
-                        topTalker = pair.first;
-                    }
-                }
-
-                int allowedFwRules = 0;
-                {
-                    std::lock_guard<std::mutex> lock(g_fwMutex);
-                    for (const auto& pair : g_fwCache) {
-                        if (pair.second == FW_STATUS_ALLOWED) {
-                            allowedFwRules++;
-                        }
-                    }
-                }
-
-                summaryStr = "Summary: " + std::to_string(tcpCount) + " TCP | " + std::to_string(udpCount) + " UDP | Allowed FW Ports: " + std::to_string(allowedFwRules);
-                if (maxTraffic > 0 && !topTalker.empty()) {
-                    summaryStr += " | Top talker: " + topTalker + " (" + FormatSpeed(static_cast<double>(maxTraffic)) + ")";
+            statusMessage.clear();
+            std::string topTalker = "";
+            ULONG64 maxTraffic = 0;
+            for (const auto& pair : processTraffic) {
+                if (pair.second > maxTraffic) {
+                    maxTraffic = pair.second;
+                    topTalker = pair.first;
                 }
             }
+
+            int allowedFwRules = FirewallManager::Instance().CountAllowedRules();
+            summaryStr = "Summary: " + std::to_string(tcpCount) + " TCP | " + std::to_string(udpCount) + " UDP | Allowed FW Ports: " + std::to_string(allowedFwRules);
+            if (maxTraffic > 0 && !topTalker.empty()) {
+                summaryStr += " | Top talker: " + topTalker + " (" + FormatSpeed(static_cast<double>(maxTraffic)) + ")";
+            }
         }
-        if (summaryStr.length() < (size_t)width - 1) {
-            summaryStr.append((width - 1) - summaryStr.length(), ' ');
-        } else if (summaryStr.length() > (size_t)width - 1) {
-            summaryStr = summaryStr.substr(0, width - 1);
+        std::cout << "\x1b[30;106m" << PadOrTrim(summaryStr, width - 1) << "\x1b[0m";
+
+        // If rule adding modal is active, overlay it centered on screen
+        if (enteringRule) {
+            RenderAddRuleModal(width, height, ruleTargetProc, ruleTargetPid, ruleIsTcp, ruleIsAllow, rulePortsInput, IsElevated());
         }
-        std::cout << "\x1b[30;106m" << summaryStr << "\x1b[0m";
 
         // Process Key Events
         DWORD waitResult = WaitForSingleObject(hInput, 100);
@@ -455,59 +468,100 @@ void RunInteractiveLoop() {
                         if (enteringRule) {
                             if (keyCode == VK_ESCAPE) {
                                 enteringRule = false;
-                                inputBuffer.clear();
+                                rulePortsInput.clear();
+                            } else if (keyCode == VK_TAB) {
+                                ruleIsTcp = !ruleIsTcp;
+                            } else if (keyCode == VK_F2) {
+                                ruleIsAllow = !ruleIsAllow;
                             } else if (keyCode == VK_BACK) {
-                                if (!inputBuffer.empty()) inputBuffer.pop_back();
+                                if (!rulePortsInput.empty()) {
+                                    rulePortsInput.pop_back();
+                                }
                             } else if (keyCode == VK_RETURN) {
-                                bool parsed = false;
-                                size_t slash = inputBuffer.find('/');
-                                if (slash != std::string::npos) {
-                                    std::string portStr = inputBuffer.substr(0, slash);
-                                    std::string protoStr = inputBuffer.substr(slash + 1);
-                                    std::transform(protoStr.begin(), protoStr.end(), protoStr.begin(), ::tolower);
-                                    try {
-                                        int portVal = std::stoi(portStr);
-                                        if (portVal > 0 && portVal <= 65535 && (protoStr == "tcp" || protoStr == "udp")) {
-                                            bool isTcp = (protoStr == "tcp");
-                                            std::wstring procNameW(selectedProcName.begin(), selectedProcName.end());
-                                            std::wstring appPath = GetProcessImagePath(selectedPid);
-                                            bool success = AddFirewallRule(static_cast<u_short>(portVal), isTcp, procNameW, appPath);
+                                if (!IsElevated()) {
+                                    statusMessage = "Error: Creating firewall rules requires Administrator privileges.";
+                                    statusMessageTimer = GetTickCount();
+                                    enteringRule = false;
+                                    rulePortsInput.clear();
+                                } else {
+                                    std::string rawInput = rulePortsInput;
+                                    while (!rawInput.empty() && std::isspace(static_cast<unsigned char>(rawInput.front()))) rawInput.erase(rawInput.begin());
+                                    while (!rawInput.empty() && std::isspace(static_cast<unsigned char>(rawInput.back()))) rawInput.pop_back();
+
+                                    if (rawInput.empty()) {
+                                        statusMessage = "Error: Port specification cannot be empty.";
+                                        statusMessageTimer = GetTickCount();
+                                    } else {
+                                        bool effectiveIsTcp = ruleIsTcp;
+                                        bool effectiveIsAllow = ruleIsAllow;
+
+                                        // Optional inline parsing: 8080/udp or 8080/block
+                                        size_t slash = rawInput.find('/');
+                                        if (slash != std::string::npos) {
+                                            std::string suffix = rawInput.substr(slash + 1);
+                                            rawInput = rawInput.substr(0, slash);
+                                            std::transform(suffix.begin(), suffix.end(), suffix.begin(), ::tolower);
+                                            if (suffix.find("udp") != std::string::npos) effectiveIsTcp = false;
+                                            if (suffix.find("tcp") != std::string::npos) effectiveIsTcp = true;
+                                            if (suffix.find("block") != std::string::npos) effectiveIsAllow = false;
+                                            if (suffix.find("allow") != std::string::npos) effectiveIsAllow = true;
+                                        }
+
+                                        bool validChars = true;
+                                        for (char c : rawInput) {
+                                            if (!std::isdigit(static_cast<unsigned char>(c)) && c != ',' && c != '-') {
+                                                validChars = false;
+                                                break;
+                                            }
+                                        }
+
+                                        if (!validChars || rawInput.empty()) {
+                                            statusMessage = "Error: Invalid port format. Examples: 8080, 8000-8080, or 80,443";
+                                            statusMessageTimer = GetTickCount();
+                                        } else {
+                                            std::wstring procNameW(ruleTargetProc.begin(), ruleTargetProc.end());
+                                            std::wstring appPath = ProcessResolver::GetProcessImagePath(ruleTargetPid);
+                                            bool success = FirewallManager::Instance().AddRule(rawInput, effectiveIsTcp, procNameW, appPath, effectiveIsAllow);
                                             statusMessageTimer = GetTickCount();
                                             if (success) {
-                                                statusMessage = "Firewall rule created successfully! Resolving cache...";
+                                                statusMessage = "Firewall rule created successfully! Cache refreshing...";
                                                 std::thread(UpdateFirewallCache).detach();
                                             } else {
-                                                statusMessage = "Error: Failed to create firewall rule. Ensure running elevated.";
+                                                statusMessage = "Error: Failed to create firewall rule via Windows COM API.";
                                             }
-                                            parsed = true;
                                         }
-                                    } catch (...) {}
+                                    }
+                                    enteringRule = false;
+                                    rulePortsInput.clear();
                                 }
-                                if (!parsed) {
-                                    statusMessageTimer = GetTickCount();
-                                    statusMessage = "Invalid rule format! Use <port>/<tcp|udp> (e.g. 8080/tcp).";
-                                }
-                                enteringRule = false;
-                                inputBuffer.clear();
-                            } else if (std::isalnum(static_cast<unsigned char>(ascChar)) || ascChar == '/') {
-                                if (inputBuffer.length() < 30) {
-                                    inputBuffer += ascChar;
+                            } else if (std::isdigit(static_cast<unsigned char>(ascChar)) || ascChar == ',' || ascChar == '-' || ascChar == '/') {
+                                if (rulePortsInput.length() < 32) {
+                                    rulePortsInput += ascChar;
                                 }
                             }
                         } else {
                             if (ascChar == 'a' || ascChar == 'A') {
                                 if (currentView == VIEW_SUMMARY && totalRows > 0) {
-                                    selectedProcName = summaries[selectedIndex].procName;
-                                    selectedPid = 0;
+                                    ruleTargetProc = summaries[selectedIndex].procName;
+                                    ruleTargetPid = 0;
                                     for (const auto& conn : connections) {
-                                        if (conn.procName == selectedProcName && conn.pid > 0) {
-                                            selectedPid = conn.pid;
+                                        if (conn.procName == ruleTargetProc && conn.pid > 0) {
+                                            ruleTargetPid = conn.pid;
                                             break;
                                         }
                                     }
+                                    ruleIsTcp = true;
+                                    ruleIsAllow = true;
+                                    rulePortsInput.clear();
+                                } else if (currentView == VIEW_DETAIL && totalRows > 0) {
+                                    const auto& detailRow = detailRows[selectedIndex];
+                                    ruleTargetProc = selectedProcName;
+                                    ruleTargetPid = (detailRow.pid > 0) ? detailRow.pid : selectedPid;
+                                    ruleIsTcp = (detailRow.proto == "TCP");
+                                    ruleIsAllow = true;
+                                    rulePortsInput = std::to_string(detailRow.localPort);
                                 }
                                 enteringRule = true;
-                                inputBuffer.clear();
                                 statusMessage.clear();
                             } else if (keyCode == VK_ESCAPE || ascChar == 'q' || ascChar == 'Q') {
                                 if (currentView == VIEW_SUMMARY) {
@@ -550,35 +604,16 @@ void RunInteractiveLoop() {
                                     selectedIndex = 0;
                                     scrollOffset = 0;
                                 }
-                            }
-                            else if (ascChar == 's' || ascChar == 'S') {
+                            } else if (ascChar == 's' || ascChar == 'S') {
                                 if (currentView == VIEW_DETAIL && totalRows > 0) {
                                     const auto& detailRow = detailRows[selectedIndex];
                                     std::wstring ruleName = L"";
                                     bool isEnabled = false;
-                                    {
-                                        std::lock_guard<std::mutex> lock(g_fwMutex);
-                                        for (const auto& r : g_fwRulesList) {
-                                            if (r.port == detailRow.localPort && r.proto == detailRow.proto) {
-                                                bool procMatch = (r.procName == selectedProcName);
-                                                if (!procMatch && (r.procName == "-" || r.procName.empty())) {
-                                                    std::string suffix = " for " + selectedProcName;
-                                                    if (r.ruleNameStr.length() >= suffix.length() &&
-                                                        r.ruleNameStr.compare(r.ruleNameStr.length() - suffix.length(), suffix.length(), suffix) == 0) {
-                                                        procMatch = true;
-                                                    }
-                                                }
-                                                if (procMatch) {
-                                                    ruleName = r.ruleName;
-                                                    isEnabled = r.enabled;
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
+                                    bool found = FirewallManager::Instance().FindRule(detailRow.localPort, detailRow.proto, selectedProcName, ruleName, isEnabled);
+
                                     statusMessageTimer = GetTickCount();
-                                    if (!ruleName.empty()) {
-                                        bool success = ToggleFirewallRule(ruleName, !isEnabled);
+                                    if (found && !ruleName.empty()) {
+                                        bool success = FirewallManager::Instance().ToggleRule(ruleName, !isEnabled);
                                         if (success) {
                                             statusMessage = "Firewall rule status toggled successfully!";
                                             std::thread(UpdateFirewallCache).detach();
@@ -593,29 +628,12 @@ void RunInteractiveLoop() {
                                 if (currentView == VIEW_DETAIL && totalRows > 0) {
                                     const auto& detailRow = detailRows[selectedIndex];
                                     std::wstring ruleName = L"";
-                                    {
-                                        std::lock_guard<std::mutex> lock(g_fwMutex);
-                                        for (const auto& r : g_fwRulesList) {
-                                            if (r.port == detailRow.localPort && r.proto == detailRow.proto) {
-                                                bool procMatch = (r.procName == selectedProcName);
-                                                if (!procMatch && (r.procName == "-" || r.procName.empty())) {
-                                                    std::string suffix = " for " + selectedProcName;
-                                                    if (r.ruleNameStr.length() >= suffix.length() &&
-                                                        r.ruleNameStr.compare(r.ruleNameStr.length() - suffix.length(), suffix.length(), suffix) == 0) {
-                                                        procMatch = true;
-                                                    }
-                                                }
-                                                if (procMatch) {
-                                                    ruleName = r.ruleName;
-                                                    break;
-                                                }
-                                            }
-                                        }
+                                    bool isEnabled = false;
+                                    bool found = FirewallManager::Instance().FindRule(detailRow.localPort, detailRow.proto, selectedProcName, ruleName, isEnabled);
 
-                                    }
                                     statusMessageTimer = GetTickCount();
-                                    if (!ruleName.empty()) {
-                                        bool success = DeleteFirewallRule(ruleName);
+                                    if (found && !ruleName.empty()) {
+                                        bool success = FirewallManager::Instance().DeleteRule(ruleName);
                                         if (success) {
                                             statusMessage = "Firewall rule deleted successfully!";
                                             std::thread(UpdateFirewallCache).detach();
@@ -642,7 +660,6 @@ void RunInteractiveLoop() {
                                 selectedIndex = totalRows - 1;
                             }
                         }
-
                     }
                 }
             }
@@ -650,6 +667,5 @@ void RunInteractiveLoop() {
     }
 
     SetConsoleMode(hInput, prevMode);
-    ShowConsoleCursor(true);
+    Terminal::ShowConsoleCursor(true);
 }
-
