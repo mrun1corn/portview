@@ -119,6 +119,15 @@ std::string WStringToString(const std::wstring& wstr) {
     return strTo;
 }
 
+std::wstring StringToWString(const std::string& str) {
+    if (str.empty()) return L"";
+    int sizeNeeded = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), NULL, 0);
+    if (sizeNeeded <= 0) return L"";
+    std::wstring wstrTo(sizeNeeded, 0);
+    MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), &wstrTo[0], sizeNeeded);
+    return wstrTo;
+}
+
 std::string PadOrTrim(std::string str, int targetWidth) {
     if (targetWidth <= 0) return "";
     size_t width = static_cast<size_t>(targetWidth);

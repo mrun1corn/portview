@@ -152,6 +152,17 @@ void SystemMetrics::QueryProcessMetrics(DWORD pid, double& outCpuPercent, ULONG6
     CloseHandle(hProcess);
 }
 
+void SystemMetrics::PruneDeadPids(const std::unordered_set<DWORD>& activePids) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto it = pidCpuHistory_.begin(); it != pidCpuHistory_.end(); ) {
+        if (activePids.find(it->first) == activePids.end()) {
+            it = pidCpuHistory_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 bool SystemMetrics::KillProcess(DWORD pid, DWORD exitCode) {
     if (pid <= 4) return false;
     HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, pid);

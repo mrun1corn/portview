@@ -10,6 +10,8 @@
 #include <vector>
 #include <unordered_map>
 #include <mutex>
+#include <atomic>
+#include <thread>
 #include <netfw.h>
 #include "core/data_models.h"
 
@@ -28,6 +30,10 @@ public:
     std::vector<FirewallRuleRow> FindMatchingRules(const std::string& procBase) const;
     bool FindRule(u_short port, const std::string& proto, const std::string& procName, std::wstring& outRuleName, bool& outIsEnabled) const;
 
+    void TriggerAsyncUpdate();
+    void WaitForPendingUpdate();
+    static bool ValidatePortRange(const std::string& portsStr);
+
     bool AddRule(const std::string& portsStr, bool isTcp, const std::wstring& procName,
                  const std::wstring& appPath, bool isAllow = true, const std::string& customName = "");
     bool AddRule(u_short port, bool isTcp, const std::wstring& procName,
@@ -38,16 +44,20 @@ public:
     bool DeleteRule(const std::wstring& ruleName);
 
 private:
-    FirewallManager() = default;
-    ~FirewallManager() = default;
+    FirewallManager();
+    ~FirewallManager();
     FirewallManager(const FirewallManager&) = delete;
     FirewallManager& operator=(const FirewallManager&) = delete;
 
     mutable std::mutex mutex_;
     std::unordered_map<std::string, FirewallStatus> cache_;
     std::vector<FirewallRuleRow> rulesList_;
+
+    std::atomic<bool> isUpdating_{false};
+    std::thread updateThread_;
+    std::mutex updateThreadMutex_;
 };
 
 inline void UpdateFirewallCache() {
-    FirewallManager::Instance().UpdateCache();
+    FirewallManager::Instance().TriggerAsyncUpdate();
 }

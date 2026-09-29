@@ -51,6 +51,9 @@ std::string NetworkScanner::ResolveHostname(DWORD ipAddress) {
 
                 {
                     std::lock_guard<std::mutex> innerLock(dnsMutex_);
+                    if (dnsCache_.size() >= 512) {
+                        dnsCache_.clear();
+                    }
                     dnsCache_[ipAddress] = std::move(hostname);
                     inFlightDnsQueries_.erase(ipAddress);
                 }
@@ -79,6 +82,8 @@ void NetworkScanner::Scan(std::vector<ConnectionRow>& connections,
     udpCount = 0;
 
     DWORD now = GetTickCount();
+
+    std::unordered_set<std::string> activeKeys;
 
     // 1. TCP Connections
     ULONG tcpSize = 0;
@@ -118,8 +123,9 @@ void NetworkScanner::Scan(std::vector<ConnectionRow>& connections,
                     conn.recvBytesVal = dataRod.DataBytesIn;
                     conn.totalBytes = conn.sentBytesVal + conn.recvBytesVal;
 
-                    std::string key = std::to_string(row.dwLocalAddr) + ":" + std::to_string(row.dwLocalPort) + "-" +
+                    std::string key = conn.proto + ":" + std::to_string(row.dwLocalAddr) + ":" + std::to_string(row.dwLocalPort) + "-" +
                                       std::to_string(row.dwRemoteAddr) + ":" + std::to_string(row.dwRemotePort);
+                    activeKeys.insert(key);
 
                     auto it = prevBytesMap_.find(key);
                     if (it != prevBytesMap_.end()) {
@@ -175,11 +181,29 @@ void NetworkScanner::Scan(std::vector<ConnectionRow>& connections,
             connections.push_back(std::move(conn));
         }
     }
+
+    // Prune stale connection keys to prevent unbounded memory growth
+    for (auto it = prevBytesMap_.begin(); it != prevBytesMap_.end(); ) {
+        if (activeKeys.find(it->first) == activeKeys.end()) {
+            it = prevBytesMap_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 void NetworkScanner::BuildSummaries(const std::vector<ConnectionRow>& connections,
                                    std::vector<ProcessSummaryRow>& summaries) {
     summaries.clear();
+
+    std::unordered_set<DWORD> activePids;
+    for (const auto& conn : connections) {
+        if (conn.pid > 0) {
+            activePids.insert(conn.pid);
+        }
+    }
+    SystemMetrics::Instance().PruneDeadPids(activePids);
+
     std::unordered_map<std::string, std::vector<size_t>> groups;
     for (size_t i = 0; i < connections.size(); ++i) {
         std::string name = connections[i].procName;

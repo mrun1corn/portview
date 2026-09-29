@@ -11,8 +11,6 @@
 #include <iostream>
 #include <string>
 
-#pragma comment(lib, "iphlpapi.lib")
-#pragma comment(lib, "ws2_32.lib")
 
 int main(int argc, char* argv[]) {
     bool staticMode = false;

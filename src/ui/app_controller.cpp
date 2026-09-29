@@ -16,13 +16,60 @@
 #include <thread>
 #include <cctype>
 
+namespace {
+
+class ConsoleModeGuard {
+public:
+    ConsoleModeGuard() {
+        hInput_ = GetStdHandle(STD_INPUT_HANDLE);
+        if (hInput_ != INVALID_HANDLE_VALUE && GetConsoleMode(hInput_, &origMode_)) {
+            hasOrigMode_ = true;
+            s_instance = this;
+            SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+        }
+    }
+
+    ~ConsoleModeGuard() {
+        Restore();
+        SetConsoleCtrlHandler(ConsoleCtrlHandler, FALSE);
+        if (s_instance == this) {
+            s_instance = nullptr;
+        }
+    }
+
+    void Restore() {
+        if (hasOrigMode_) {
+            SetConsoleMode(hInput_, origMode_);
+            Terminal::ShowConsoleCursor(true);
+            hasOrigMode_ = false;
+        }
+    }
+
+    static BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType) {
+        (void)ctrlType;
+        if (s_instance) {
+            s_instance->Restore();
+        }
+        FirewallManager::Instance().WaitForPendingUpdate();
+        return FALSE;
+    }
+
+private:
+    HANDLE hInput_ = INVALID_HANDLE_VALUE;
+    DWORD origMode_ = 0;
+    bool hasOrigMode_ = false;
+    static inline ConsoleModeGuard* s_instance = nullptr;
+};
+
+} // anonymous namespace
+
 AppController& AppController::Instance() {
     static AppController instance;
     return instance;
 }
 
 void AppController::PrintStatic() {
-    UpdateFirewallCache();
+    FirewallManager::Instance().UpdateCache();
 
     std::vector<ConnectionRow> connections;
     std::unordered_map<std::string, ULONG64> processTraffic;
@@ -110,7 +157,8 @@ void AppController::RunInteractive() {
     NetworkScanner::Instance().BuildSummaries(connections, summaries);
     lastRefreshTime = GetTickCount();
 
-    std::thread(UpdateFirewallCache).detach();
+    FirewallManager::Instance().TriggerAsyncUpdate();
+    ConsoleModeGuard consoleGuard;
     Terminal::ShowConsoleCursor(false);
 
     HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
@@ -155,7 +203,7 @@ void AppController::RunInteractive() {
 
         static DWORD lastFwRefresh = 0;
         if (currentTime - lastFwRefresh >= 10000) {
-            std::thread(UpdateFirewallCache).detach();
+            FirewallManager::Instance().TriggerAsyncUpdate();
             lastFwRefresh = currentTime;
         }
 
@@ -180,7 +228,8 @@ void AppController::RunInteractive() {
             if (dot != std::string::npos) {
                 procBase = procBase.substr(0, dot);
             }
-            std::transform(procBase.begin(), procBase.end(), procBase.begin(), ::tolower);
+            std::transform(procBase.begin(), procBase.end(), procBase.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
             std::vector<FirewallRuleRow> matchedRules = FirewallManager::Instance().FindMatchingRules(procBase);
             for (const auto& rule : matchedRules) {
@@ -372,14 +421,17 @@ void AppController::RunInteractive() {
                         if (rawInput.empty()) {
                             statusMessage = "Error: Port specification cannot be empty.";
                             statusMessageTimer = GetTickCount();
+                        } else if (!FirewallManager::ValidatePortRange(rawInput)) {
+                            statusMessage = "Error: Invalid port(s). Must be 1-65535, comma-separated or ranges <= 1024 ports.";
+                            statusMessageTimer = GetTickCount();
                         } else {
-                            std::wstring procNameW(ruleTargetProc.begin(), ruleTargetProc.end());
+                            std::wstring procNameW = StringToWString(ruleTargetProc);
                             std::wstring appPath = ProcessResolver::GetProcessImagePath(ruleTargetPid);
                             bool success = FirewallManager::Instance().AddRule(rawInput, ruleIsTcp, procNameW, appPath, ruleIsAllow);
                             statusMessageTimer = GetTickCount();
                             if (success) {
                                 statusMessage = "Firewall rule created successfully! Cache refreshing...";
-                                std::thread(UpdateFirewallCache).detach();
+                                FirewallManager::Instance().TriggerAsyncUpdate();
                             } else {
                                 statusMessage = "Error: Failed to create firewall rule via Windows COM API.";
                             }
@@ -504,7 +556,7 @@ void AppController::RunInteractive() {
                                                 if (found && !ruleName.empty()) {
                                                     bool success = FirewallManager::Instance().ToggleRule(ruleName, !isEnabled);
                                                     statusMessage = success ? "Firewall rule status toggled successfully!" : "Error: Failed to toggle firewall rule.";
-                                                    if (success) std::thread(UpdateFirewallCache).detach();
+                                                    if (success) FirewallManager::Instance().TriggerAsyncUpdate();
                                                 }
                                             }
                                         } else {
@@ -561,7 +613,7 @@ void AppController::RunInteractive() {
                                 if (!rulePortsInput.empty()) rulePortsInput.pop_back();
                             } else if (keyCode == VK_RETURN) {
                                 executeSaveRule();
-                            } else if (std::isdigit(static_cast<unsigned char>(ascChar)) || ascChar == ',' || ascChar == '-' || ascChar == '/') {
+                            } else if (std::isdigit(static_cast<unsigned char>(ascChar)) || ascChar == ',' || ascChar == '-' || ascChar == '*') {
                                 if (rulePortsInput.length() < 32) rulePortsInput += ascChar;
                             }
                         } else if (confirmingKill) {
@@ -678,7 +730,7 @@ void AppController::RunInteractive() {
                                         bool success = FirewallManager::Instance().ToggleRule(ruleName, !isEnabled);
                                         if (success) {
                                             statusMessage = "Firewall rule status toggled successfully!";
-                                            std::thread(UpdateFirewallCache).detach();
+                                            FirewallManager::Instance().TriggerAsyncUpdate();
                                         } else {
                                             statusMessage = "Error: Failed to toggle firewall rule. Ensure running elevated.";
                                         }
@@ -738,6 +790,6 @@ void AppController::RunInteractive() {
         }
     }
 
-    SetConsoleMode(hInput, prevMode);
-    Terminal::ShowConsoleCursor(true);
+    consoleGuard.Restore();
+    FirewallManager::Instance().WaitForPendingUpdate();
 }

@@ -44,6 +44,7 @@ std::string IpToString(DWORD ipAddress);
 std::string FormatBytes(ULONG64 bytes);
 std::string FormatSpeed(double bytesPerSec);
 std::string WStringToString(const std::wstring& wstr);
+std::wstring StringToWString(const std::string& str);
 std::string PadOrTrim(std::string str, int targetWidth);
 bool IsElevated();
 bool CopyToClipboard(const std::string& text);

@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <mutex>
 #include "core/data_models.h"
 
@@ -19,6 +20,9 @@ public:
 
     // Query CPU% and Working Set RAM in bytes for a specific process PID
     void QueryProcessMetrics(DWORD pid, double& outCpuPercent, ULONG64& outRamBytes);
+
+    // Evict dead PIDs from CPU history
+    void PruneDeadPids(const std::unordered_set<DWORD>& activePids);
 
     // Terminate a process by PID
     static bool KillProcess(DWORD pid, DWORD exitCode = 1);

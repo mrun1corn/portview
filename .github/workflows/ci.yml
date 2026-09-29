@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build, Lint & Test (MSVC)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Configure CMake with Static CRT and Warnings-as-Errors
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DPORTVIEW_BUILD_TESTS=ON
+
+      - name: Build PortView & Test Suite
+        run: cmake --build build --config Release
+
+      - name: Run Automated CTest Suite
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Smoke Test CLI Executable
+        shell: pwsh
+        run: |
+          Write-Host "Verifying --version..."
+          .\build\Release\portview.exe --version
+          
+          Write-Host "Verifying --help..."
+          .\build\Release\portview.exe --help
+          
+          Write-Host "Verifying --static snapshot..."
+          .\build\Release\portview.exe --static

@@ -22,7 +22,8 @@ void SearchFilter::Clear() {
 bool SearchFilter::Matches(const std::string& target) const {
     if (query_.empty()) return true;
     std::string lowerTarget = target;
-    std::transform(lowerTarget.begin(), lowerTarget.end(), lowerTarget.begin(), ::tolower);
+    std::transform(lowerTarget.begin(), lowerTarget.end(), lowerTarget.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return lowerTarget.find(query_) != std::string::npos;
 }
 
