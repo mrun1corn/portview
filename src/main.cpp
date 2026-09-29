@@ -19,7 +19,7 @@ int main(int argc, char* argv[]) {
     if (argc > 1) {
         std::string arg = argv[1];
         if (arg == "-h" || arg == "--help") {
-            std::cout << "portview v1.5 — Windows Port & Traffic Reviewer\n\n"
+            std::cout << "portview v1.6 — Windows Port & Traffic Reviewer\n\n"
                       << "Usage: portview.exe [options]\n\n"
                       << "Options:\n"
                       << "  -h, --help     Show this help message\n"
@@ -28,7 +28,7 @@ int main(int argc, char* argv[]) {
                       << "Note: Run as administrator to see per-connection traffic stats.\n";
             return 0;
         } else if (arg == "-v" || arg == "--version") {
-            std::cout << "portview v1.5\n";
+            std::cout << "portview v1.6\n";
             return 0;
         } else if (arg == "-s" || arg == "--static") {
             staticMode = true;

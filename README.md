@@ -64,7 +64,7 @@ Invoke-WebRequest -Uri "https://github.com/mrun1corn/portview/releases/latest/do
 
 ```text
 ========================================================================================
-portview v1.5 [ELEVATED] | CPU: 2.1% | RAM: 6.8 GB / 7.7 GB (87%) | F3: Sort | Esc: Quit
+portview v1.6 [ELEVATED] | CPU: 2.1% | RAM: 6.8 GB / 7.7 GB (87%) | F3: Sort | Esc: Quit
 ========================================================================================
 [/] Filter: chrome                                                        (1/39 processes)
    PROCESS                  CPU%    RAM        PORTS   CONNS   SENT v       RECV        

@@ -84,7 +84,7 @@ void AppController::PrintStatic() {
     SystemHostMetrics hostMetrics = SystemMetrics::Instance().QueryHostMetrics();
 
     std::cout << "========================================================================================\n";
-    std::cout << "portview v1.5 | " << hostMetrics.cpuBannerStr << " | " << hostMetrics.ramBannerStr << "\n";
+    std::cout << "portview v1.6 | " << hostMetrics.cpuBannerStr << " | " << hostMetrics.ramBannerStr << "\n";
     std::cout << "========================================================================================\n";
     std::cout << "Process Summary (" << summaries.size() << " active processes)\n";
     std::cout << "PROCESS                   CPU%    RAM        PORTS   CONNS   SENT         RECV\n";
