@@ -9,7 +9,8 @@
 [![Dependencies](https://img.shields.io/badge/Dependencies-None-brightgreen?style=flat-square)](https://github.com/mrun1corn/portview)
 [![Latest Release](https://img.shields.io/github/v/release/mrun1corn/portview?style=flat-square&logo=github)](https://github.com/mrun1corn/portview/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/mrun1corn/portview/total?style=flat-square&logo=github)](https://github.com/mrun1corn/portview/releases)
-[![Build & Release](https://img.shields.io/github/actions/workflow/status/mrun1corn/portview/release.yml?style=flat-square&logo=githubactions&label=build)](https://github.com/mrun1corn/portview/actions/workflows/release.yml)
+[![Build & Release](https://img.shields.io/github/actions/workflow/status/mrun1corn/portview/release.yml?style=flat-square&logo=githubactions&label=release)](https://github.com/mrun1corn/portview/actions/workflows/release.yml)
+[![CI Tests](https://img.shields.io/github/actions/workflow/status/mrun1corn/portview/ci.yml?style=flat-square&logo=githubactions&label=tests)](https://github.com/mrun1corn/portview/actions/workflows/ci.yml)
 
 ---
 
@@ -49,12 +50,13 @@ Invoke-WebRequest -Uri "https://github.com/mrun1corn/portview/releases/latest/do
 - 📊 **Dynamic Column Sorting**: Click column headers or press <kbd>F3</kbd>/<kbd>F5</kbd> to sort ascending/descending by Process Name, CPU%, RAM, Ports, Conns, or Bandwidth.
 - 🖱️ **Full Native Mouse Support**: Mouse wheel scrolling, row clicking, double-click drill-down/toggle, and right-click context menu.
 - 📈 **Live CPU & RAM Monitoring**: Per-process working set RAM and CPU% delta tracking, stabilized with Exponential Moving Average (EMA) to prevent number jitter.
-- 🛡️ **Built-in Windows Firewall Manager**: Real-time rule lookup via COM `NetFwPolicy2`, interactive rule creation modal (ports, ranges like `8000-8080`, comma lists), and one-key rule toggling (<kbd>F4</kbd>).
+- 🛡️ **Built-in Windows Firewall Manager**: Real-time rule lookup via COM `NetFwPolicy2`, interactive rule creation modal with port validation (1–65535, bounded ranges, DOS allocation guards), and one-key rule toggling (<kbd>F4</kbd>).
+- 🔒 **Hardened & Memory-Safe Architecture**: Bounded caches, active connection/PID pruning (zero slow memory leak), thread-safe asynchronous updates with clean shutdown joins, and RAII console mode & cursor restoration.
 - 📋 **Process Overview & Deep Drill-Down**: Toggle between high-level aggregated process view and individual socket endpoint inspections.
 - 📊 **Per-Connection Bandwidth Stats**: Live tracking of sent/received byte rates and top talkers via Windows Extended TCP/UDP stats.
 - 🔪 **Process Management & Clipboard**: Terminate rogue processes (<kbd>Del</kbd> / <kbd>F8</kbd>) and copy process details to clipboard (<kbd>Ctrl+C</kbd>).
 - 🚀 **Zero-Flicker Double Buffering**: Off-screen frame rendering guarantees smooth 60fps-like terminal refreshes without console flicker.
-- ⚡ **Zero External Dependencies**: Built 100% on standard Windows SDK APIs (`iphlpapi`, `ws2_32`, `ole32`, `psapi`).
+- ⚡ **Zero External Dependencies**: Built 100% on standard Windows SDK APIs (`iphlpapi`, `ws2_32`, `ole32`, `psapi`) with static CRT runtime (`/MT`).
 
 ---
 
@@ -143,14 +145,22 @@ Windows requires elevated privileges to query the Extended TCP/UDP statistics (`
 
 ### Compilation Steps
 
-```bash
+```powershell
 git clone https://github.com/mrun1corn/portview.git
 cd portview
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
 
-The resulting standalone executable is generated at `build/Release/portview.exe`.
+The resulting standalone executable is generated at `build/Release/portview.exe` with static MSVC runtime (`/MT`), requiring no external DLLs or VC Redistributables.
+
+### Running Automated Tests
+
+Run the built-in test suite via CTest:
+
+```powershell
+ctest --test-dir build -C Release --output-on-failure
+```
 
 ---
 
@@ -160,22 +170,22 @@ The codebase is organized as a clean **Modular Monolith** with decoupled domain 
 
 ```text
 portview/
-├── CMakeLists.txt                # Root CMake configuration
+├── CMakeLists.txt                # Root CMake configuration (/W4 /WX /sdl /MT)
 ├── include/                      # Public domain headers
 │   ├── core/                     # Core data models, metrics & utility routines
 │   │   ├── data_models.h         # ConnectionRow, ProcessSummaryRow, FirewallRuleRow
-│   │   ├── system_metrics.h      # Host & process CPU/RAM engine with EMA smoothing
-│   │   └── utils.h               # String formatting, elevation checks, clipboard helper
+│   │   ├── system_metrics.h      # Host & process CPU/RAM engine with EMA smoothing & dead PID pruning
+│   │   └── utils.h               # String formatting, UTF-8/UTF-16 conversion, elevation checks
 │   ├── network/                  # Network capture & protocol domain
-│   │   ├── network_scanner.h     # TCP/UDP enumeration, traffic aggregation & DNS
+│   │   ├── network_scanner.h     # TCP/UDP enumeration, traffic aggregation & bounded DNS cache
 │   │   └── process_resolver.h    # PID-to-process name and image path resolution
 │   ├── security/                 # Firewall & COM security domain
-│   │   └── firewall_manager.h    # Windows NetFwPolicy2 COM manager & port range parser
+│   │   └── firewall_manager.h    # Windows NetFwPolicy2 COM manager, port validator & async thread pool
 │   └── ui/                       # Terminal rendering & controller subsystem
 │       ├── terminal_screen.h     # Double-buffered VT console engine & mouse mode
 │       ├── search_filter.h       # Live type-to-filter engine
 │       ├── components.h          # Banner, column headers, modals & status bar
-│       └── app_controller.h      # Interactive event loop & static runner
+│       └── app_controller.h      # Interactive event loop, RAII console guard & static runner
 ├── src/                          # Modular implementations
 │   ├── core/
 │   │   ├── system_metrics.cpp
@@ -191,9 +201,12 @@ portview/
 │   │   ├── search_filter.cpp
 │   │   └── terminal_screen.cpp
 │   └── main.cpp                  # CLI entrypoint & RAII guard initialization
+├── tests/
+│   └── test_main.cpp             # Automated unit tests for port validation and string utils
 └── .github/
     ├── workflows/
-    │   └── release.yml           # Automated multi-release packaging & changelogs
+    │   ├── ci.yml                # Automated MSVC /W4 /WX build, CTest & CLI smoke tests
+    │   └── release.yml           # Automated multi-release packaging & changelogs (pinned SHAs)
     ├── ISSUE_TEMPLATE/
     │   ├── bug_report.yml        # Structured bug report form
     │   ├── feature_request.yml   # Feature proposal form
