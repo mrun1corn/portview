@@ -1,7 +1,7 @@
 # portview
 
-> **A modern, interactive TUI network inspector and lightweight `netstat` / `TCPView` alternative for Windows.**  
-> Monitor open TCP/UDP ports, aggregate connections by process, track real-time CPU/RAM resource usage, measure live per-socket bandwidth, and manage Windows Firewall rules directly from your terminal with zero external dependencies.
+> **The TUI `netstat` alternative with live per-socket bandwidth and one-key firewall rules.**  
+> Port enumeration, per-process aggregation, CPU/RAM telemetry, and Windows Firewall management — entirely in your terminal, zero dependencies, 2,600 lines of C++17.
 
 [![Platform](https://img.shields.io/badge/Platform-Windows-blue?style=flat-square&logo=windows)](https://github.com/mrun1corn/portview)
 [![Language](https://img.shields.io/badge/Language-C++17-00599C?style=flat-square&logo=cplusplus)](https://github.com/mrun1corn/portview)
@@ -17,15 +17,25 @@
 
 ## Quick Install
 
-Open **PowerShell** or **Command Prompt** as **Administrator** (Right-click $\rightarrow$ *Run as administrator*) and run:
+Download and run — **no administrator rights required**.
 
 ```powershell
-# Run in an elevated terminal (PowerShell as Administrator)
+# Works immediately as a normal user
 Invoke-WebRequest -Uri "https://github.com/mrun1corn/portview/releases/latest/download/portview.exe" -OutFile "portview.exe"; .\portview.exe
 ```
 
-> [!IMPORTANT]
-> **Run as Administrator:** Running your terminal as Administrator allows PortView to collect live per-socket bandwidth telemetry (`SENT` / `RECV`), resolve elevated system process paths, and create/toggle Windows Firewall rules. Without elevation, PortView still works seamlessly for port mapping, live search, and process inspection.
+Optionally move it onto your `PATH`:
+
+```powershell
+# Run from anywhere, no .\ prefix needed
+Move-Item .\portview.exe "$env:USERPROFILE\bin\portview.exe"
+$env:PATH += ";$env:USERPROFILE\bin"
+```
+
+> [!TIP]
+> **Optional: elevate for the full feature set.** Running your terminal as Administrator unlocks per-socket bandwidth telemetry (`SENT` / `RECV`), elevated system process path resolution, and firewall rule creation/toggling. Port enumeration, live search, sorting, and process inspection work fully without it.
+>
+> To get it: right-click your terminal $\rightarrow$ *Run as administrator*, then launch `portview.exe` again.
 
 ---
 
