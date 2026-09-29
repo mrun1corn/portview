@@ -31,6 +31,9 @@ private:
         FILETIME ftKernel;
         FILETIME ftUser;
         DWORD tickCount = 0;
+        double smoothedCpu = 0.0;
+        ULONG64 smoothedRam = 0;
+        bool hasPrevious = false;
     };
 
     std::mutex mutex_;
@@ -42,4 +45,5 @@ private:
     FILETIME prevKernelTime_{0, 0};
     FILETIME prevUserTime_{0, 0};
     bool hasPreviousHostTimes_ = false;
+    double smoothedHostCpu_ = 0.0;
 };

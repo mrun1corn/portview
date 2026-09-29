@@ -11,7 +11,7 @@ std::string FormatBanner(int width, bool isSummary, const std::string& procName,
     std::string elevStr = isElevated ? "[ELEVATED]" : "[NON-ELEVATED]";
 
     if (isSummary) {
-        std::snprintf(headerBuf, sizeof(headerBuf), "portview v1.4 %s | %s | %s | Arrows/Enter: Nav | F2: Add Rule | Del: Kill | Esc: Quit",
+        std::snprintf(headerBuf, sizeof(headerBuf), "portview v1.4 %s | %s | %s | F3: Sort | F2: Add Rule | Del: Kill | Esc: Quit",
                       elevStr.c_str(), hostMetrics.cpuBannerStr.c_str(), hostMetrics.ramBannerStr.c_str());
     } else {
         std::string pidStr = (pid == 0) ? "IDLE" : "PID " + std::to_string(pid);
@@ -22,10 +22,19 @@ std::string FormatBanner(int width, bool isSummary, const std::string& procName,
     return "\x1b[30;106m" + PadOrTrim(headerBuf, width - 1) + "\x1b[0m\n";
 }
 
-std::string FormatSummaryColumns(int width) {
+std::string FormatSummaryColumns(int width, SummarySortMode sortMode, bool ascending) {
+    char arrow = ascending ? '^' : 'v';
+    std::string pName = (sortMode == SORT_NAME) ? ("PROCESS " + std::string(1, arrow)) : "PROCESS";
+    std::string cpu = (sortMode == SORT_CPU) ? ("CPU% " + std::string(1, arrow)) : "CPU%";
+    std::string ram = (sortMode == SORT_RAM) ? ("RAM " + std::string(1, arrow)) : "RAM";
+    std::string ports = (sortMode == SORT_PORTS) ? ("PORTS " + std::string(1, arrow)) : "PORTS";
+    std::string conns = (sortMode == SORT_CONNS) ? ("CONNS " + std::string(1, arrow)) : "CONNS";
+    std::string sent = (sortMode == SORT_TRAFFIC) ? ("SENT " + std::string(1, arrow)) : "SENT";
+    std::string recv = "RECV";
+
     char colBuf[256];
     std::snprintf(colBuf, sizeof(colBuf), "   %-24s %-7s %-10s %-7s %-7s %-12s %-12s",
-                  "PROCESS", "CPU%", "RAM", "PORTS", "CONNS", "SENT", "RECV");
+                  pName.c_str(), cpu.c_str(), ram.c_str(), ports.c_str(), conns.c_str(), sent.c_str(), recv.c_str());
     return "\x1b[36;1m" + PadOrTrim(colBuf, width - 1) + "\x1b[0m\n";
 }
 
@@ -108,10 +117,13 @@ std::string FormatDetailRow(const ConnectionRow& row, bool selected, int width) 
         line += portBuf;
         line += "\x1b[93m" + std::string(remoteBuf) + "\x1b[0m ";
 
-        if (row.state == "ESTABLISHED") line += "\x1b[92m● ESTABLISHED  \x1b[0m ";
-        else if (row.state == "LISTENING") line += "\x1b[36m○ LISTENING    \x1b[0m ";
-        else if (row.state.find("WAIT") != std::string::npos) line += "\x1b[93m⏳ " + PadOrTrim(row.state, 12) + " \x1b[0m ";
-        else line += "\x1b[90m· " + PadOrTrim(row.state, 13) + "\x1b[0m ";
+        char stateBuf[32];
+        std::snprintf(stateBuf, sizeof(stateBuf), "%-15s", row.state.c_str());
+
+        if (row.state == "ESTABLISHED") line += "\x1b[92m" + std::string(stateBuf) + "\x1b[0m ";
+        else if (row.state == "LISTENING") line += "\x1b[36m" + std::string(stateBuf) + "\x1b[0m ";
+        else if (row.state.find("WAIT") != std::string::npos) line += "\x1b[93m" + std::string(stateBuf) + "\x1b[0m ";
+        else line += "\x1b[90m" + std::string(stateBuf) + "\x1b[0m ";
 
         if (row.sentStr != "-") line += "\x1b[92m" + std::string(sentBuf) + "\x1b[0m ";
         else line += "\x1b[90m" + std::string(sentBuf) + "\x1b[0m ";

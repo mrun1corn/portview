@@ -52,9 +52,17 @@ SystemHostMetrics SystemMetrics::QueryHostMetrics() {
             ULONGLONG totalSystem = kernelDiff + userDiff;
             if (totalSystem > 0) {
                 ULONGLONG activeTime = (totalSystem > idleDiff) ? (totalSystem - idleDiff) : 0;
-                metrics.totalCpuPercent = (static_cast<double>(activeTime) * 100.0) / static_cast<double>(totalSystem);
-                if (metrics.totalCpuPercent > 100.0) metrics.totalCpuPercent = 100.0;
-                if (metrics.totalCpuPercent < 0.0) metrics.totalCpuPercent = 0.0;
+                double instantCpu = (static_cast<double>(activeTime) * 100.0) / static_cast<double>(totalSystem);
+                if (instantCpu > 100.0) instantCpu = 100.0;
+                if (instantCpu < 0.0) instantCpu = 0.0;
+
+                if (hasPreviousHostTimes_) {
+                    constexpr double alpha = 0.35;
+                    smoothedHostCpu_ = (alpha * instantCpu) + ((1.0 - alpha) * smoothedHostCpu_);
+                } else {
+                    smoothedHostCpu_ = instantCpu;
+                }
+                metrics.totalCpuPercent = smoothedHostCpu_;
             }
         }
         prevIdleTime_ = idleTime;
@@ -105,10 +113,24 @@ void SystemMetrics::QueryProcessMetrics(DWORD pid, double& outCpuPercent, ULONG6
                 ULONGLONG procTimeDelta100ns = currTotal - prevTotal;
                 // 1 ms = 10,000 * 100ns
                 double procTimeMs = static_cast<double>(procTimeDelta100ns) / 10000.0;
-                double cpu = (procTimeMs / (static_cast<double>(timeDiffMs) * static_cast<double>(numProcessors_))) * 100.0;
-                if (cpu < 0.0) cpu = 0.0;
-                if (cpu > 100.0) cpu = 100.0;
-                outCpuPercent = cpu;
+                double instantCpu = (procTimeMs / (static_cast<double>(timeDiffMs) * static_cast<double>(numProcessors_))) * 100.0;
+                if (instantCpu < 0.0) instantCpu = 0.0;
+                if (instantCpu > 100.0) instantCpu = 100.0;
+
+                if (it->second.hasPrevious) {
+                    constexpr double alpha = 0.35;
+                    it->second.smoothedCpu = (alpha * instantCpu) + ((1.0 - alpha) * it->second.smoothedCpu);
+                    it->second.smoothedRam = static_cast<ULONG64>((alpha * static_cast<double>(outRamBytes)) + ((1.0 - alpha) * static_cast<double>(it->second.smoothedRam)));
+                } else {
+                    it->second.smoothedCpu = instantCpu;
+                    it->second.smoothedRam = outRamBytes;
+                    it->second.hasPrevious = true;
+                }
+                outCpuPercent = it->second.smoothedCpu;
+                outRamBytes = it->second.smoothedRam;
+            } else {
+                outCpuPercent = it->second.smoothedCpu;
+                outRamBytes = it->second.smoothedRam;
             }
             it->second.ftKernel = ftKernel;
             it->second.ftUser = ftUser;
@@ -118,7 +140,12 @@ void SystemMetrics::QueryProcessMetrics(DWORD pid, double& outCpuPercent, ULONG6
             snap.ftKernel = ftKernel;
             snap.ftUser = ftUser;
             snap.tickCount = now;
+            snap.smoothedCpu = 0.0;
+            snap.smoothedRam = outRamBytes;
+            snap.hasPrevious = false;
             pidCpuHistory_[pid] = snap;
+            outCpuPercent = 0.0;
+            outRamBytes = snap.smoothedRam;
         }
     }
 
