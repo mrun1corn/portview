@@ -903,45 +903,11 @@ void AppController::RunInteractive() {
                                     if (!killTargetPids.empty()) {
                                         confirmingKill = true;
                                     } else if (sum.connsCount == 0 || sum.representativePid == 0) {
-                                        std::string procBase = sum.procName;
-                                        size_t dot = procBase.find_last_of('.');
-                                        if (dot != std::string::npos)
-                                            procBase = procBase.substr(0, dot);
-                                        std::transform(
-                                            procBase.begin(), procBase.end(), procBase.begin(),
-                                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-                                        auto rules = FirewallManager::Instance().FindMatchingRules(procBase);
-                                        if (!rules.empty()) {
-                                            if (!IsElevated()) {
-                                                statusMessage =
-                                                    "Error: Deleting firewall rules requires Administrator privileges.";
-                                                statusMessageTimer = GetTickCount();
-                                            } else {
-                                                int delCount = 0;
-                                                for (const auto &fwRule : rules) {
-                                                    if (FirewallManager::Instance().DeleteRule(fwRule.ruleName))
-                                                        delCount++;
-                                                }
-                                                statusMessageTimer = GetTickCount();
-                                                if (delCount > 0) {
-                                                    statusMessage = "Deleted " + std::to_string(delCount) +
-                                                                    " idle firewall rule(s) for " + sum.procName + ".";
-                                                    terminatedProcs.insert(sum.procName);
-                                                    FirewallManager::Instance().TriggerAsyncUpdate();
-                                                    lastRefreshTime = 0;
-                                                    needsRedraw = true;
-                                                } else {
-                                                    statusMessage = "Error: Failed to delete firewall rules for " +
-                                                                    sum.procName + ".";
-                                                }
-                                            }
-                                        } else {
-                                            terminatedProcs.insert(sum.procName);
-                                            statusMessage = "Removed idle process " + sum.procName + " from view.";
-                                            statusMessageTimer = GetTickCount();
-                                            lastRefreshTime = 0;
-                                            needsRedraw = true;
-                                        }
+                                        // An idle process with no active sockets: dismiss from view
+                                        terminatedProcs.insert(sum.procName);
+                                        statusMessage = "Dismissed idle entry " + sum.procName + " from view.";
+                                        statusMessageTimer = GetTickCount();
+                                        needsRedraw = true;
                                     } else {
                                         if (targetedSelf) {
                                             statusMessage = "Cannot terminate PortView process.";
@@ -960,15 +926,18 @@ void AppController::RunInteractive() {
                                         bool found =
                                             FirewallManager::Instance().FindRule(detailRow.localPort, detailRow.proto,
                                                                                  selectedProcName, ruleName, isEnabled);
-                                        statusMessageTimer = GetTickCount();
                                         if (found && !ruleName.empty()) {
-                                            if (!IsElevated()) {
+                                            if (ruleName.rfind(L"PortView ", 0) != 0) {
+                                                statusMessage =
+                                                    "Protected: cannot delete external system or app firewall rules.";
+                                            } else if (!IsElevated()) {
                                                 statusMessage =
                                                     "Error: Deleting firewall rules requires Administrator privileges.";
                                             } else {
                                                 bool deleted = FirewallManager::Instance().DeleteRule(ruleName);
                                                 if (deleted) {
-                                                    statusMessage = "Firewall rule deleted successfully!";
+                                                    statusMessage =
+                                                        "Custom PortView firewall rule deleted successfully!";
                                                     FirewallManager::Instance().TriggerAsyncUpdate();
                                                     lastRefreshTime = 0;
                                                     needsRedraw = true;
@@ -976,9 +945,8 @@ void AppController::RunInteractive() {
                                                     statusMessage = "Error: Failed to delete firewall rule.";
                                                 }
                                             }
-                                        } else {
-                                            statusMessage = "No custom firewall rule found to delete.";
                                         }
+                                        statusMessageTimer = GetTickCount();
                                     } else {
                                         killTargetName = selectedProcName;
                                         DWORD pid = detailRow.pid;

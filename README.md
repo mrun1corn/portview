@@ -148,7 +148,7 @@ Summary: 30 TCP | 8 UDP | Allowed FW Ports: 12 | Top talker: chrome.exe (168.6 K
 | <kbd>F3</kbd> | Cycle sort column |
 | <kbd>F4</kbd> | Toggle the selected port's firewall rule |
 | <kbd>F5</kbd> | Reverse sort direction |
-| <kbd>Del</kbd> / <kbd>F8</kbd> | Terminate selected process (with confirmation) |
+| <kbd>Del</kbd> / <kbd>F8</kbd> | Terminate process (Summary) or delete custom firewall rule / terminate socket (Detail) |
 | <kbd>Ctrl+C</kbd> | Copy selected row to clipboard |
 
 ---
@@ -176,13 +176,19 @@ Type `8080` and the view filters down to the owning process, PID, and connection
 <details>
 <summary><b>How do I kill whatever is holding a port, without Task Manager?</b></summary>
 
-Select the process row and press <kbd>Del</kbd> or <kbd>F8</kbd>. A confirmation dialog appears; press <kbd>Y</kbd> to terminate.
+Select the process row and press <kbd>Del</kbd> or <kbd>F8</kbd>. A safety confirmation dialog appears; press <kbd>Y</kbd> to terminate. All associated process instances are terminated, dead PIDs are evicted from cache, and the process vanishes immediately from your view.
+</details>
+
+<details>
+<summary><b>Can I delete firewall rules from PortView?</b></summary>
+
+Yes. In the socket detail view (<kbd>Enter</kbd>), highlight any custom PortView rule (including dormant rules marked <kbd>IDLE</kbd>) and press <kbd>Del</kbd> to delete it directly from Windows Firewall via COM. Windows built-in system rules and third-party application rules are protected from accidental deletion.
 </details>
 
 <details>
 <summary><b>Can I see firewall rules for programs that aren't running right now?</b></summary>
 
-Yes. Rules belonging to processes with no active connections are still shown, marked <kbd>IDLE</kbd>, so stale rules and leftover allowances stay visible instead of silently hiding.
+Yes. In the socket detail view, rules belonging to programs with no active connections are surfaced, marked <kbd>IDLE</kbd>, so stale rules and leftover allowances stay visible instead of silently hiding.
 </details>
 
 <details>
