@@ -100,7 +100,7 @@ PortView removes that entirely. It shows you what's actually running and listeni
 
 ```text
 ========================================================================================
-portview v1.6 [ELEVATED] | CPU: 2.1% | RAM: 6.8 GB / 7.7 GB (87%) | F3: Sort | Esc: Quit
+portview v1.7 [ELEVATED] | CPU: 2.1% | RAM: 6.8 GB / 7.7 GB (87%) | F3: Sort | Esc: Quit
 ========================================================================================
 [/] Filter: chrome                                                        (1/39 processes)
    PROCESS                  CPU%    RAM        PORTS   CONNS   SENT v       RECV

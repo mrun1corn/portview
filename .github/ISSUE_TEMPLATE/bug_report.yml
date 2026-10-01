@@ -13,7 +13,7 @@ body:
     attributes:
       label: PortView Version
       description: Run `portview.exe --version` to get the version string.
-      placeholder: "e.g., v1.6"
+      placeholder: "e.g., v1.7"
     validations:
       required: true
 
