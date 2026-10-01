@@ -10,10 +10,10 @@
 #include <unordered_map>
 
 namespace {
-    std::mutex g_procCacheMutex;
-    std::unordered_map<DWORD, std::string> g_procNameCache;
-    std::unordered_map<DWORD, std::wstring> g_procPathCache;
-}
+std::mutex g_procCacheMutex;
+std::unordered_map<DWORD, std::string> g_procNameCache;
+std::unordered_map<DWORD, std::wstring> g_procPathCache;
+} // namespace
 
 std::string ProcessResolver::GetProcessName(DWORD pid) {
     if (pid == 0) {
@@ -87,4 +87,16 @@ std::wstring ProcessResolver::GetProcessImagePath(DWORD pid) {
     }
 
     return appPath;
+}
+
+void ProcessResolver::EvictPid(DWORD pid) {
+    std::lock_guard<std::mutex> lock(g_procCacheMutex);
+    g_procNameCache.erase(pid);
+    g_procPathCache.erase(pid);
+}
+
+void ProcessResolver::ClearCache() {
+    std::lock_guard<std::mutex> lock(g_procCacheMutex);
+    g_procNameCache.clear();
+    g_procPathCache.clear();
 }

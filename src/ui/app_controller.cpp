@@ -140,6 +140,7 @@ void AppController::RunInteractive() {
     bool confirmingKill = false;
     std::string killTargetName = "";
     std::vector<DWORD> killTargetPids;
+    std::unordered_set<std::string> terminatedProcs;
 
     std::string statusMessage = "";
     DWORD statusMessageTimer = 0;
@@ -197,6 +198,13 @@ void AppController::RunInteractive() {
         if (currentTime - lastRefreshTime >= kRefreshIntervalMs || cachedHostMetrics.cpuBannerStr.empty()) {
             NetworkScanner::Instance().Scan(connections, processTraffic, tcpCount, udpCount);
             NetworkScanner::Instance().BuildSummaries(connections, summaries);
+            if (!terminatedProcs.empty()) {
+                summaries.erase(std::remove_if(summaries.begin(), summaries.end(),
+                                               [&](const ProcessSummaryRow &s) {
+                                                   return s.connsCount == 0 && terminatedProcs.count(s.procName) > 0;
+                                               }),
+                                summaries.end());
+            }
             cachedHostMetrics = SystemMetrics::Instance().QueryHostMetrics();
             lastRefreshTime = currentTime;
             needsRedraw = true;
@@ -234,6 +242,9 @@ void AppController::RunInteractive() {
 
             std::vector<FirewallRuleRow> matchedRules = FirewallManager::Instance().FindMatchingRules(procBase);
             for (const auto &rule : matchedRules) {
+                if (portProtoSeen.empty() && terminatedProcs.count(selectedProcName) > 0) {
+                    continue;
+                }
                 std::string key = std::to_string(rule.port) + ":" + rule.proto;
                 if (portProtoSeen.find(key) == portProtoSeen.end()) {
                     ConnectionRow conn;
@@ -519,6 +530,10 @@ void AppController::RunInteractive() {
                     }
 
                     if (killedCount > 0) {
+                        terminatedProcs.insert(killTargetName);
+                        for (DWORD pid : killedPidSet) {
+                            ProcessResolver::EvictPid(pid);
+                        }
                         connections.erase(
                             std::remove_if(connections.begin(), connections.end(),
                                            [&](const ConnectionRow &c) { return killedPidSet.count(c.pid) > 0; }),
@@ -533,6 +548,11 @@ void AppController::RunInteractive() {
                                            }),
                             summaries.end());
                         pinnedProcName.clear();
+                        if (currentView == VIEW_DETAIL && selectedProcName == killTargetName) {
+                            currentView = VIEW_SUMMARY;
+                            selectedIndex = 0;
+                            scrollOffset = 0;
+                        }
                         lastRefreshTime = 0;
                         needsRedraw = true;
                     }
@@ -882,30 +902,97 @@ void AppController::RunInteractive() {
                                                          killTargetPids.end());
                                     if (!killTargetPids.empty()) {
                                         confirmingKill = true;
+                                    } else if (sum.connsCount == 0 || sum.representativePid == 0) {
+                                        std::string procBase = sum.procName;
+                                        size_t dot = procBase.find_last_of('.');
+                                        if (dot != std::string::npos)
+                                            procBase = procBase.substr(0, dot);
+                                        std::transform(
+                                            procBase.begin(), procBase.end(), procBase.begin(),
+                                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                                        auto rules = FirewallManager::Instance().FindMatchingRules(procBase);
+                                        if (!rules.empty()) {
+                                            if (!IsElevated()) {
+                                                statusMessage =
+                                                    "Error: Deleting firewall rules requires Administrator privileges.";
+                                                statusMessageTimer = GetTickCount();
+                                            } else {
+                                                int delCount = 0;
+                                                for (const auto &fwRule : rules) {
+                                                    if (FirewallManager::Instance().DeleteRule(fwRule.ruleName))
+                                                        delCount++;
+                                                }
+                                                statusMessageTimer = GetTickCount();
+                                                if (delCount > 0) {
+                                                    statusMessage = "Deleted " + std::to_string(delCount) +
+                                                                    " idle firewall rule(s) for " + sum.procName + ".";
+                                                    terminatedProcs.insert(sum.procName);
+                                                    FirewallManager::Instance().TriggerAsyncUpdate();
+                                                    lastRefreshTime = 0;
+                                                    needsRedraw = true;
+                                                } else {
+                                                    statusMessage = "Error: Failed to delete firewall rules for " +
+                                                                    sum.procName + ".";
+                                                }
+                                            }
+                                        } else {
+                                            terminatedProcs.insert(sum.procName);
+                                            statusMessage = "Removed idle process " + sum.procName + " from view.";
+                                            statusMessageTimer = GetTickCount();
+                                            lastRefreshTime = 0;
+                                            needsRedraw = true;
+                                        }
                                     } else {
                                         if (targetedSelf) {
                                             statusMessage = "Cannot terminate PortView process.";
                                         } else if (targetedSys) {
-                                            statusMessage = "Cannot terminate critical system "
-                                                            "process (PID <= 4).";
+                                            statusMessage = "Cannot terminate critical system process (PID <= 4).";
                                         } else {
                                             statusMessage = "Cannot terminate: no active process found.";
                                         }
                                         statusMessageTimer = GetTickCount();
                                     }
                                 } else if (currentView == VIEW_DETAIL && !filteredDetailRows.empty()) {
-                                    killTargetName = selectedProcName;
-                                    DWORD pid = filteredDetailRows[selectedIndex].pid;
-                                    killTargetPids.clear();
-                                    if (pid == selfPid) {
-                                        statusMessage = "Cannot terminate PortView process.";
+                                    const auto &detailRow = filteredDetailRows[selectedIndex];
+                                    if (detailRow.state == "IDLE" || detailRow.pid == 0) {
+                                        std::wstring ruleName = L"";
+                                        bool isEnabled = false;
+                                        bool found =
+                                            FirewallManager::Instance().FindRule(detailRow.localPort, detailRow.proto,
+                                                                                 selectedProcName, ruleName, isEnabled);
                                         statusMessageTimer = GetTickCount();
-                                    } else if (pid > 4) {
-                                        killTargetPids.push_back(pid);
-                                        confirmingKill = true;
+                                        if (found && !ruleName.empty()) {
+                                            if (!IsElevated()) {
+                                                statusMessage =
+                                                    "Error: Deleting firewall rules requires Administrator privileges.";
+                                            } else {
+                                                bool deleted = FirewallManager::Instance().DeleteRule(ruleName);
+                                                if (deleted) {
+                                                    statusMessage = "Firewall rule deleted successfully!";
+                                                    FirewallManager::Instance().TriggerAsyncUpdate();
+                                                    lastRefreshTime = 0;
+                                                    needsRedraw = true;
+                                                } else {
+                                                    statusMessage = "Error: Failed to delete firewall rule.";
+                                                }
+                                            }
+                                        } else {
+                                            statusMessage = "No custom firewall rule found to delete.";
+                                        }
                                     } else {
-                                        statusMessage = "Cannot terminate process with PID <= 4.";
-                                        statusMessageTimer = GetTickCount();
+                                        killTargetName = selectedProcName;
+                                        DWORD pid = detailRow.pid;
+                                        killTargetPids.clear();
+                                        if (pid == selfPid) {
+                                            statusMessage = "Cannot terminate PortView process.";
+                                            statusMessageTimer = GetTickCount();
+                                        } else if (pid > 4) {
+                                            killTargetPids.push_back(pid);
+                                            confirmingKill = true;
+                                        } else {
+                                            statusMessage = "Cannot terminate process with PID <= 4.";
+                                            statusMessageTimer = GetTickCount();
+                                        }
                                     }
                                 }
                             } else if (ascChar == 3) { // Ctrl+C

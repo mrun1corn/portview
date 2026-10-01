@@ -11,6 +11,8 @@ class ProcessResolver {
 public:
     static std::string GetProcessName(DWORD pid);
     static std::wstring GetProcessImagePath(DWORD pid);
+    static void EvictPid(DWORD pid);
+    static void ClearCache();
 };
 
 inline std::string GetProcessName(DWORD pid) {
