@@ -13,6 +13,11 @@
 [![Build & Release](https://img.shields.io/github/actions/workflow/status/mrun1corn/portview/release.yml?style=flat-square&logo=githubactions&label=release)](https://github.com/mrun1corn/portview/actions/workflows/release.yml)
 [![CI Tests](https://img.shields.io/github/actions/workflow/status/mrun1corn/portview/ci.yml?style=flat-square&logo=githubactions&label=tests)](https://github.com/mrun1corn/portview/actions/workflows/ci.yml)
 
+
+<p align="center">
+  <img src="assets/demo.gif" alt="PortView Interactive TUI Demo" width="850">
+</p>
+
 ---
 
 ## Quick Install
