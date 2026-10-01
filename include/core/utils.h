@@ -4,38 +4,38 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
-#include <winsock2.h>
-#include <windows.h>
+#include "core/data_models.h"
 #include <objbase.h>
 #include <string>
-#include "core/data_models.h"
+#include <windows.h>
+#include <winsock2.h>
 
 // RAII Wrapper for Winsock initialization
 class ScopedWinsock {
 public:
-    ScopedWinsock();
-    ~ScopedWinsock();
-    bool IsInitialized() const { return initialized_; }
+  ScopedWinsock();
+  ~ScopedWinsock();
+  bool IsInitialized() const { return initialized_; }
 
-    ScopedWinsock(const ScopedWinsock&) = delete;
-    ScopedWinsock& operator=(const ScopedWinsock&) = delete;
+  ScopedWinsock(const ScopedWinsock &) = delete;
+  ScopedWinsock &operator=(const ScopedWinsock &) = delete;
 
 private:
-    bool initialized_ = false;
+  bool initialized_ = false;
 };
 
 // RAII Wrapper for COM initialization
 class ScopedCom {
 public:
-    explicit ScopedCom(DWORD coInit = COINIT_APARTMENTTHREADED);
-    ~ScopedCom();
-    HRESULT Result() const { return hr_; }
+  explicit ScopedCom(DWORD coInit = COINIT_APARTMENTTHREADED);
+  ~ScopedCom();
+  HRESULT Result() const { return hr_; }
 
-    ScopedCom(const ScopedCom&) = delete;
-    ScopedCom& operator=(const ScopedCom&) = delete;
+  ScopedCom(const ScopedCom &) = delete;
+  ScopedCom &operator=(const ScopedCom &) = delete;
 
 private:
-    HRESULT hr_ = E_FAIL;
+  HRESULT hr_ = E_FAIL;
 };
 
 // String formatting and network conversion utilities
@@ -43,8 +43,9 @@ std::string TcpStateToString(DWORD state);
 std::string IpToString(DWORD ipAddress);
 std::string FormatBytes(ULONG64 bytes);
 std::string FormatSpeed(double bytesPerSec);
-std::string WStringToString(const std::wstring& wstr);
-std::wstring StringToWString(const std::string& str);
+std::string WStringToString(const std::wstring &wstr);
+std::wstring StringToWString(const std::string &str);
 std::string PadOrTrim(std::string str, int targetWidth);
 bool IsElevated();
-bool CopyToClipboard(const std::string& text);
+bool EnableDebugPrivilege();
+bool CopyToClipboard(const std::string &text);

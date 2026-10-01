@@ -24,7 +24,7 @@ add_executable(portview
 target_include_directories(portview PRIVATE include)
 
 # Link Windows network, IP Helper, COM/OLE, and PSAPI
-target_link_libraries(portview PRIVATE iphlpapi ws2_32 ole32 oleaut32 psapi)
+target_link_libraries(portview PRIVATE iphlpapi ws2_32 ole32 oleaut32 psapi advapi32)
 
 # Strict warnings and security flags for MSVC
 if(MSVC)
@@ -39,12 +39,16 @@ if(PORTVIEW_BUILD_TESTS)
     add_executable(portview_tests
         tests/test_main.cpp
         src/core/utils.cpp
+        src/core/system_metrics.cpp
         src/security/firewall_manager.cpp
     )
     target_include_directories(portview_tests PRIVATE include)
-    target_link_libraries(portview_tests PRIVATE iphlpapi ws2_32 ole32 oleaut32)
+    target_link_libraries(portview_tests PRIVATE iphlpapi ws2_32 ole32 oleaut32 psapi advapi32)
     if(MSVC)
         target_compile_options(portview_tests PRIVATE /W4 /WX /sdl /permissive-)
     endif()
-    add_test(NAME portview_tests COMMAND portview_tests)
+    add_test(NAME test_port_adding COMMAND portview_tests --port-add)
+    add_test(NAME test_rule_deletion COMMAND portview_tests --delete)
+    add_test(NAME test_kill_process COMMAND portview_tests --kill)
+    add_test(NAME test_string_utils COMMAND portview_tests --utils)
 endif()
