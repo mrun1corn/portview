@@ -25,6 +25,8 @@ graphify-out/
 .repowise/
 .context/
 
+.agents/
+.kilo/
 # OS artifacts
 Thumbs.db
 [Dd]esktop.ini

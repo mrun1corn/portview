@@ -219,7 +219,7 @@ The standalone executable lands at `build/Release/portview.exe`, statically link
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-The suite covers firewall port validation, UTF-8/UTF-16 round-tripping, and byte/speed formatting. CI additionally smoke-tests the CLI (`--version`, `--help`, `--static`) on every push and pull request.
+The suite covers firewall port adding & validation, rule deletion & toggling, process termination & privilege checks, and string/network conversion utilities across four standalone test targets. CI additionally smoke-tests the CLI (`--version`, `--help`, `--static`) on every push and pull request.
 
 ---
 
@@ -241,7 +241,8 @@ portview/
 │   ├── security/      firewall_manager.cpp
 │   ├── ui/            app_controller.cpp · components.cpp · search_filter.cpp · terminal_screen.cpp
 │   └── main.cpp       CLI entrypoint & RAII init
-├── tests/test_main.cpp
+├── resources/         portview.ico · resource.rc
+├── tests/             test_port_adding.cpp · test_rule_deletion.cpp · test_kill_process.cpp · test_string_utils.cpp
 └── .github/workflows/ ci.yml · release.yml
 ```
 

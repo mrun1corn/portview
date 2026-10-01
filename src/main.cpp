@@ -5,8 +5,9 @@
 #define _UNICODE
 #endif
 
-#include "ui_renderer.h"
-#include "utils.h"
+#include "core/utils.h"
+#include "ui/app_controller.h"
+#include "ui/terminal_screen.h"
 
 #include <iostream>
 #include <string>
